@@ -82,7 +82,9 @@ button {
 .topbar {
   gap: 6px;
   justify-content: space-between;
+  min-height: 44px;
   padding: 12px 0 18px;
+  position: relative;
 }
 
 .week-pill {
@@ -158,19 +160,26 @@ button {
 
 .screen-title {
   flex: 1;
-  font-size: 18px;
+  font-size: 21px;
   font-weight: 850;
+  left: 50%;
   line-height: 1;
+  max-width: 196px;
   min-width: 0;
   overflow: hidden;
+  position: absolute;
   text-align: center;
   text-overflow: ellipsis;
+  transform: translateX(-50%);
   white-space: nowrap;
 }
 
 .icon-row {
   display: flex;
   gap: 4px;
+  margin-left: auto;
+  position: relative;
+  z-index: 1;
 }
 
 .topbar .icon-button {
@@ -384,6 +393,14 @@ button {
   padding: 13px 14px;
 }
 
+.schedule-step-row {
+  background: transparent;
+  border-color: var(--line) transparent transparent;
+  border-radius: 0;
+  margin: 0 0 22px;
+  padding: 13px 8px 12px;
+}
+
 .label-strong {
   font-size: 15px;
   font-weight: 850;
@@ -426,10 +443,10 @@ button {
 }
 
 .meal-card-head {
-  gap: 6px;
+  gap: 4px;
   justify-content: space-between;
   min-height: 58px;
-  padding: 0 16px;
+  padding: 0 10px;
 }
 
 .meal-title {
@@ -438,7 +455,7 @@ button {
   flex: 1;
   font-size: 17px;
   font-weight: 850;
-  gap: 7px;
+  gap: 5px;
   min-width: 0;
 }
 
@@ -459,10 +476,10 @@ button {
   border-radius: 5px;
   color: var(--red);
   display: inline-flex;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 850;
-  gap: 3px;
-  padding: 4px;
+  gap: 4px;
+  padding: 4px 5px;
   white-space: nowrap;
 }
 
@@ -473,6 +490,8 @@ button {
 
 .target-pill svg {
   flex: 0 0 auto;
+  height: 12px;
+  width: 12px;
 }
 
 .complete-card .meal-title {
@@ -490,14 +509,22 @@ button {
 }
 
 .time-pill {
-  background: #f5f2fa;
+  background: transparent;
   border: 0;
   border-radius: 7px;
   font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo,
     monospace;
-  font-size: 14px;
-  padding: 5px 6px;
+  font-size: 16px;
+  padding: 0;
   white-space: nowrap;
+}
+
+.meal-card-head .time-pill {
+  color: var(--ink);
+}
+
+.disabled-card .time-pill {
+  color: #777982;
 }
 
 .meal-macros {

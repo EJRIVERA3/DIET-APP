@@ -75,6 +75,7 @@ type Meal = {
   locked: boolean;
   foods: Food[];
   targetStatus?: "met" | "under";
+  countsTowardProgress?: boolean;
 };
 
 type Workout = {
@@ -374,6 +375,7 @@ function startDayMeals(date = "default"): Meal[] {
     carbs: meal.carbs,
     locked: false,
     targetStatus: meal.targetStatus,
+    countsTowardProgress: false,
     foods: meal.foods.map((food, foodIndex) => ({
       id: `food-${date}-${mealIndex + 1}-${foodIndex + 1}`,
       name: food.name,
@@ -484,6 +486,8 @@ function normalizeDay(value: unknown, date: string, profile: Profile): DayLog {
       carbs: Number(meal.carbs ?? 0),
       locked: Boolean(meal.locked),
       targetStatus: meal.targetStatus === "met" || meal.targetStatus === "under" ? meal.targetStatus : undefined,
+      countsTowardProgress:
+        typeof meal.countsTowardProgress === "boolean" ? meal.countsTowardProgress : undefined,
       foods: Array.isArray(meal.foods)
         ? meal.foods.map((food) => ({
             id: food.id ?? makeId("food"),
@@ -510,7 +514,7 @@ function normalizeDay(value: unknown, date: string, profile: Profile): DayLog {
     })),
   };
 
-  return hydrateStartDayIfEmpty(day, profile);
+  return normalizeStartDayTemplate(hydrateStartDayIfEmpty(day, profile), profile);
 }
 
 function getTotals(day: DayLog | null | undefined): Totals {
@@ -535,7 +539,7 @@ function getLoggedTotals(day: DayLog | null | undefined): Totals {
   }
 
   return day.meals.reduce((totals, meal) => {
-    if (meal.foods.length === 0) {
+    if (meal.foods.length === 0 || meal.countsTowardProgress === false) {
       return totals;
     }
 
@@ -568,6 +572,36 @@ function hydrateStartDayIfEmpty(day: DayLog, profile: Profile): DayLog {
     carbs: day.carbs,
     stepMin: day.stepMin,
     stepMax: day.stepMax,
+  };
+}
+
+function isStartDayTemplate(day: DayLog, profile: Profile) {
+  return (
+    sameDay(day.date, profile.startDate) &&
+    day.meals.some((meal) =>
+      meal.foods.some((food) => food.name === "Turkey Bacon" || food.name.startsWith("Venti Iced Chai")),
+    )
+  );
+}
+
+function normalizeStartDayTemplate(day: DayLog, profile: Profile): DayLog {
+  if (!isStartDayTemplate(day, profile)) {
+    return day;
+  }
+
+  return {
+    ...day,
+    meals: day.meals.map((meal) => {
+      if (meal.foods.length === 0) {
+        return meal;
+      }
+
+      return {
+        ...meal,
+        targetStatus: meal.targetStatus ?? "met",
+        countsTowardProgress: false,
+      };
+    }),
   };
 }
 
@@ -1206,7 +1240,7 @@ export default function DietApp() {
   function renderSchedule() {
     return (
       <>
-        <div className="topbar">
+      <div className="topbar">
           {renderWeekPill()}
           <h1 className="screen-title">{formatHeaderTitle(selectedDate)}</h1>
           <div className="icon-row">
@@ -1229,7 +1263,7 @@ export default function DietApp() {
         {renderWeekStrip()}
         {renderMacroGrid(currentDay, loggedTotals)}
 
-        <div className="step-row header-row">
+        <div className="step-row schedule-step-row header-row">
           <span className="label-strong header-row" style={{ gap: 8 }}>
             <Footprints size={22} /> Step count target
           </span>
@@ -1238,7 +1272,7 @@ export default function DietApp() {
           </strong>
         </div>
 
-        {calorieDelta !== 0 && (
+        {calorieDelta !== 0 && !isStartDayTemplate(currentDay, profile) && (
           <div className="notice">
             <Info size={24} color="#2c95b8" />
             <p>
