@@ -1,0 +1,17 @@
+{
+  "name": "Daily Diet Cloud",
+  "short_name": "Diet Cloud",
+  "description": "Cloud backed daily diet schedule and macro tracker.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f7fb",
+  "theme_color": "#f7f7fb",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
