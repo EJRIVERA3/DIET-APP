@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   Ban,
   Box,
+  CalendarCheck,
   CalendarDays,
   CalendarX,
   Check,
@@ -446,7 +447,7 @@ function seedDays(today: string, profile: Profile) {
 
   for (let index = 0; index < 7; index += 1) {
     const value = addDays(start, index);
-    seeded[value] = createDay(value, profile, sameDay(value, today));
+    seeded[value] = createDay(value, profile);
   }
 
   return seeded;
@@ -528,7 +529,7 @@ function normalizeDay(value: unknown, date: string, profile: Profile): DayLog {
     })),
   };
 
-  return normalizeStartDayTemplate(hydrateStartDayIfEmpty(day, profile), profile);
+  return normalizeStartDayTemplate(normalizeLegacySampleDay(hydrateStartDayIfEmpty(day, profile), profile), profile);
 }
 
 function getTotals(day: DayLog | null | undefined): Totals {
@@ -598,6 +599,56 @@ function isStartDayTemplate(day: DayLog, profile: Profile) {
   );
 }
 
+function isLegacySampleDay(day: DayLog) {
+  const [meal1, ...rest] = day.meals;
+
+  return (
+    day.weighIn.weight === null &&
+    day.workouts.length === 0 &&
+    day.busyBlocks.length === 0 &&
+    day.meals.length === 4 &&
+    meal1?.name === "Meal 1" &&
+    meal1.time === "9:00 AM" &&
+    meal1.calories === 275 &&
+    meal1.protein === 5 &&
+    meal1.fat === 15 &&
+    meal1.carbs === 30 &&
+    meal1.foods.length === 1 &&
+    meal1.foods[0]?.name === "Cheese Danish" &&
+    rest.every(
+      (meal, index) =>
+        meal.name === `Meal ${index + 2}` &&
+        meal.foods.length === 0 &&
+        meal.calories === 475 &&
+        meal.protein === 40 &&
+        meal.fat === 15 &&
+        meal.carbs === 45,
+    )
+  );
+}
+
+function normalizeLegacySampleDay(day: DayLog, profile: Profile): DayLog {
+  if (!isLegacySampleDay(day)) {
+    return day;
+  }
+
+  const fresh = createDay(day.date, profile);
+
+  return {
+    ...fresh,
+    calories: day.calories,
+    protein: day.protein,
+    fat: day.fat,
+    carbs: day.carbs,
+    stepMin: day.stepMin,
+    stepMax: day.stepMax,
+    weighIn: {
+      time: day.weighIn.time,
+      weight: null,
+    },
+  };
+}
+
 function normalizeStartDayTemplate(day: DayLog, profile: Profile): DayLog {
   if (!isStartDayTemplate(day, profile)) {
     return day;
@@ -641,7 +692,7 @@ function underText(value: number, unit = "") {
     return `${Math.abs(value)}${unit} over`;
   }
 
-  return "on target";
+  return "on track";
 }
 
 function foodCountText(count: number) {
@@ -724,7 +775,7 @@ export default function DietApp() {
   const [weekMenuOpen, setWeekMenuOpen] = useState(false);
   const saveTouchedRef = useRef(false);
 
-  const currentDay = days[selectedDate] ?? createDay(selectedDate, profile, sameDay(selectedDate, today));
+  const currentDay = days[selectedDate] ?? createDay(selectedDate, profile);
   const totals = useMemo(() => getTotals(currentDay), [currentDay]);
   const loggedTotals = useMemo(() => getLoggedTotals(currentDay), [currentDay]);
   const calorieDelta = currentDay.calories - totals.calories;
@@ -891,7 +942,7 @@ export default function DietApp() {
   function updateDay(value: string, updater: (day: DayLog) => DayLog) {
     touch();
     setDays((current) => {
-      const base = current[value] ?? createDay(value, profile, sameDay(value, today));
+      const base = current[value] ?? createDay(value, profile);
       return {
         ...current,
         [value]: updater(cloneDay(base)),
@@ -914,7 +965,7 @@ export default function DietApp() {
       touch();
       return {
         ...current,
-        [value]: createDay(value, profile, sameDay(value, today)),
+        [value]: createDay(value, profile),
       };
     });
   }
@@ -1364,10 +1415,10 @@ export default function DietApp() {
           const value = addDays(start, index);
           const date = parseDateKey(value);
           const day = days[value];
-          const dayTotals = getTotals(day);
+          const dayLoggedTotals = getLoggedTotals(day);
           const beforeStart = value < profile.startDate;
           const target = day?.calories ?? profile.calories;
-          const isUnder = Boolean(day && target - dayTotals.calories > 0 && !beforeStart);
+          const isUnder = Boolean(day && value < today && target - dayLoggedTotals.calories > 0 && !beforeStart);
 
           return (
             <button
@@ -1454,9 +1505,11 @@ export default function DietApp() {
   }
 
   function renderWeighInCard() {
+    const hasWeight = currentDay.weighIn.weight !== null;
+
     return (
       <button
-        className={`card disabled-card ${currentDay.weighIn.weight ? "complete-card" : ""}`}
+        className={`card ${hasWeight ? "disabled-card complete-card" : "weigh-card"}`}
         key="weigh-in"
         style={{ textAlign: "left" }}
         onClick={() => {
@@ -1467,9 +1520,9 @@ export default function DietApp() {
         <div className="split-row" style={{ justifyContent: "space-between" }}>
           <strong className="meal-title">
             <Gauge size={24} />
-            {currentDay.weighIn.weight && <CheckCircle2 className="weigh-check" size={18} />}
+            {hasWeight && <CheckCircle2 className="weigh-check" size={18} />}
             <span>Weigh-in</span>
-            {currentDay.weighIn.weight && <span className="weigh-value">{currentDay.weighIn.weight} lb</span>}
+            {hasWeight && <span className="weigh-value">{currentDay.weighIn.weight} lb</span>}
           </strong>
           <span className="time-pill">{currentDay.weighIn.time}</span>
         </div>
@@ -2506,11 +2559,19 @@ export default function DietApp() {
       return null;
     }
 
+    const dayPlanOnTrack = calorieDelta === 0 && proteinDelta === 0;
+
     return (
       <div className="dock">
         <div className="summary-stat" style={{ position: "relative" }}>
-          <CalendarX color="#cc1f35" size={30} />
-          <span className="nav-dot" />
+          {dayPlanOnTrack ? (
+            <CalendarCheck color="#35246c" size={30} />
+          ) : (
+            <>
+              <CalendarX color="#cc1f35" size={30} />
+              <span className="nav-dot" />
+            </>
+          )}
         </div>
         <div className="summary-stat">
           <MacroBadge kind="cal">
