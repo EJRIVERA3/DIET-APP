@@ -1,0 +1,18 @@
+/* Fonts + smoothing for the static (GitHub Pages) build.
+   The vinext/Cloudflare build gets these from next/font in app/layout.tsx;
+   here we load Geist from Google Fonts and wire up the same CSS variables. */
+:root {
+  --font-geist-sans: "Geist", system-ui, -apple-system, "Segoe UI", Roboto,
+    sans-serif;
+  --font-geist-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo,
+    monospace;
+}
+
+body {
+  font-family: var(--font-geist-sans);
+}
+
+.antialiased {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}

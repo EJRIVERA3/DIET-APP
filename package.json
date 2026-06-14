@@ -8,8 +8,11 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
+    "build:static": "vite build --config vite.static.config.ts",
+    "preview:static": "vite preview --config vite.static.config.ts",
+    "deploy:cf": "npm run build && wrangler deploy",
     "start": "vinext start",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-static --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

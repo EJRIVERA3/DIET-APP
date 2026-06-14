@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "static-preview",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "preview:static"],
+      "port": 4173
+    }
+  ]
+}
