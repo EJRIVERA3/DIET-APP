@@ -434,6 +434,25 @@ function getTotals(day: DayLog | null | undefined): Totals {
   );
 }
 
+function getLoggedTotals(day: DayLog | null | undefined): Totals {
+  if (!day) {
+    return EMPTY_TOTALS;
+  }
+
+  return day.meals.reduce((totals, meal) => {
+    if (meal.foods.length === 0) {
+      return totals;
+    }
+
+    return {
+      calories: totals.calories + Number(meal.calories || 0),
+      protein: totals.protein + Number(meal.protein || 0),
+      fat: totals.fat + Number(meal.fat || 0),
+      carbs: totals.carbs + Number(meal.carbs || 0),
+    };
+  }, EMPTY_TOTALS);
+}
+
 function clamp(value: number, min = 0) {
   return Number.isFinite(value) ? Math.max(min, Math.round(value)) : min;
 }
@@ -462,7 +481,7 @@ function underText(value: number, unit = "") {
 }
 
 function percent(value: number, target: number) {
-  if (!target) {
+  if (!target || value <= 0) {
     return 0;
   }
 
@@ -539,6 +558,7 @@ export default function DietApp() {
 
   const currentDay = days[selectedDate] ?? createDay(selectedDate, profile, sameDay(selectedDate, today));
   const totals = useMemo(() => getTotals(currentDay), [currentDay]);
+  const loggedTotals = useMemo(() => getLoggedTotals(currentDay), [currentDay]);
   const calorieDelta = currentDay.calories - totals.calories;
   const proteinDelta = currentDay.protein - totals.protein;
   const currentWeekNumber = dietWeekNumber(selectedDate, profile.startDate);
@@ -1087,7 +1107,7 @@ export default function DietApp() {
         </div>
 
         {renderWeekStrip()}
-        {renderMacroGrid(currentDay, totals)}
+        {renderMacroGrid(currentDay, loggedTotals)}
 
         <div className="step-row header-row">
           <span className="label-strong header-row" style={{ gap: 8 }}>
@@ -1915,7 +1935,7 @@ export default function DietApp() {
             }
 
             const day = days[value];
-            const hasData = Boolean(day && (getTotals(day).calories > 0 || day.weighIn.weight));
+            const hasData = Boolean(day && (getLoggedTotals(day).calories > 0 || day.weighIn.weight));
 
             return (
               <button

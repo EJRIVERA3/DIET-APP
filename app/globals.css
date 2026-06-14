@@ -320,7 +320,6 @@ button {
 .meter-fill {
   border-radius: inherit;
   height: 100%;
-  min-width: 8px;
 }
 
 .meter-label {
