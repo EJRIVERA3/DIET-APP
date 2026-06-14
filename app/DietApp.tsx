@@ -41,7 +41,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type Tab = "schedule" | "progress" | "explore" | "more";
-type Sheet = "actions" | "meal" | "copy" | "advanced" | "cloud" | "weighin" | null;
+type Sheet = "actions" | "meal" | "copy" | "advanced" | "cloud" | "weighin" | "calendar" | null;
 type FullScreen = "workout" | "busy" | "edit" | null;
 
 type Profile = {
@@ -486,6 +486,7 @@ export default function DietApp() {
   const [workoutDraft, setWorkoutDraft] = useState<Workout>(() => newWorkout());
   const [busyDraft, setBusyDraft] = useState<BusyBlock>(() => newBusyBlock());
   const [weighDraft, setWeighDraft] = useState("");
+  const [calendarMonth, setCalendarMonth] = useState(BOOT_DATE);
   const saveTouchedRef = useRef(false);
 
   const currentDay = days[selectedDate] ?? createDay(selectedDate, profile, sameDay(selectedDate, today));
@@ -661,6 +662,11 @@ export default function DietApp() {
         [value]: createDay(value, profile, sameDay(value, today)),
       };
     });
+  }
+
+  function openCalendar() {
+    setCalendarMonth(selectedDate);
+    setSheet("calendar");
   }
 
   function openNewMeal() {
@@ -898,6 +904,9 @@ export default function DietApp() {
           </button>
           <h1 className="screen-title">{formatHeaderTitle(selectedDate)}</h1>
           <div className="icon-row">
+            <button className="icon-button flat" onClick={openCalendar} title="Pick a date">
+              <CalendarDays size={26} />
+            </button>
             <button className="icon-button flat" onClick={() => setFullScreen("edit")} title="Edit schedule">
               <LayoutGrid size={26} />
             </button>
@@ -1172,7 +1181,7 @@ export default function DietApp() {
             </div>
           </div>
 
-          <button className="ghost-button" style={{ marginTop: 18, width: "100%" }}>
+          <button className="ghost-button" style={{ marginTop: 18, width: "100%" }} onClick={openCalendar}>
             <RotateCcw size={24} /> View progress history
           </button>
         </section>
@@ -1484,7 +1493,100 @@ export default function DietApp() {
           {sheet === "advanced" && renderAdvancedSheet()}
           {sheet === "cloud" && renderCloudSheet()}
           {sheet === "weighin" && renderWeighInSheet()}
+          {sheet === "calendar" && renderCalendarSheet()}
         </section>
+      </>
+    );
+  }
+
+  function renderCalendarSheet() {
+    const base = parseDateKey(calendarMonth);
+    const year = base.getFullYear();
+    const monthIndex = base.getMonth();
+    const monthLabel = new Intl.DateTimeFormat("en-US", {
+      month: "long",
+      year: "numeric",
+    }).format(base);
+    const startOffset = (new Date(year, monthIndex, 1).getDay() + 6) % 7;
+    const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+    const cells: Array<string | null> = [];
+    for (let index = 0; index < startOffset; index += 1) {
+      cells.push(null);
+    }
+    for (let date = 1; date <= daysInMonth; date += 1) {
+      cells.push(dateKey(new Date(year, monthIndex, date)));
+    }
+
+    function shiftMonth(amount: number) {
+      setCalendarMonth(dateKey(new Date(year, monthIndex + amount, 1)));
+    }
+
+    function pickDate(value: string) {
+      chooseDate(value);
+      setActiveTab("schedule");
+      setSheet(null);
+    }
+
+    return (
+      <>
+        <div className="sheet-title-row">
+          <button
+            className="icon-button flat"
+            onClick={() => shiftMonth(-1)}
+            aria-label="Previous month"
+            title="Previous month"
+          >
+            <ArrowLeft size={24} />
+          </button>
+          <h2>{monthLabel}</h2>
+          <button
+            className="icon-button flat"
+            onClick={() => shiftMonth(1)}
+            aria-label="Next month"
+            title="Next month"
+          >
+            <ChevronRight size={24} />
+          </button>
+        </div>
+
+        <div className="calendar-weekdays">
+          {["M", "T", "W", "T", "F", "S", "S"].map((label, index) => (
+            <span key={index}>{label}</span>
+          ))}
+        </div>
+
+        <div className="calendar-grid">
+          {cells.map((value, index) => {
+            if (!value) {
+              return <span className="calendar-cell empty" key={`pad-${index}`} />;
+            }
+
+            const day = days[value];
+            const hasData = Boolean(day && (getTotals(day).calories > 0 || day.weighIn.weight));
+
+            return (
+              <button
+                key={value}
+                className={`calendar-cell ${sameDay(value, selectedDate) ? "active" : ""} ${
+                  sameDay(value, today) ? "today" : ""
+                }`}
+                onClick={() => pickDate(value)}
+                title={formatHeaderTitle(value)}
+              >
+                <span className="calendar-day-num">{parseDateKey(value).getDate()}</span>
+                {hasData && <span className="calendar-data-dot" />}
+              </button>
+            );
+          })}
+        </div>
+
+        <button
+          className="ghost-button"
+          style={{ marginTop: 18, width: "100%" }}
+          onClick={() => pickDate(today)}
+        >
+          <CalendarDays size={22} /> Jump to today
+        </button>
       </>
     );
   }
