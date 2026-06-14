@@ -6,6 +6,7 @@ import {
   Box,
   CalendarDays,
   CalendarX,
+  Check,
   CheckCircle2,
   ChevronRight,
   CircleHelp,
@@ -199,6 +200,23 @@ function weekStart(value: string) {
   const day = (date.getDay() + 6) % 7;
   date.setDate(date.getDate() - day);
   return dateKey(date);
+}
+
+function dateOrdinal(value: string) {
+  const date = parseDateKey(value);
+  return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000;
+}
+
+function daysBetween(start: string, end: string) {
+  return Math.round(dateOrdinal(end) - dateOrdinal(start));
+}
+
+function dietWeekNumber(value: string, startDate: string) {
+  return Math.max(1, Math.floor(daysBetween(weekStart(startDate), weekStart(value)) / 7) + 1);
+}
+
+function weekStartForNumber(startDate: string, weekNumber: number) {
+  return addDays(weekStart(startDate), (weekNumber - 1) * 7);
 }
 
 function sameDay(a: string, b: string) {
@@ -516,12 +534,32 @@ export default function DietApp() {
   const [calendarMonth, setCalendarMonth] = useState(BOOT_DATE);
   const [adjustSelectedMealIds, setAdjustSelectedMealIds] = useState<string[]>([]);
   const [adjustReset, setAdjustReset] = useState(false);
+  const [weekMenuOpen, setWeekMenuOpen] = useState(false);
   const saveTouchedRef = useRef(false);
 
   const currentDay = days[selectedDate] ?? createDay(selectedDate, profile, sameDay(selectedDate, today));
   const totals = useMemo(() => getTotals(currentDay), [currentDay]);
   const calorieDelta = currentDay.calories - totals.calories;
   const proteinDelta = currentDay.protein - totals.protein;
+  const currentWeekNumber = dietWeekNumber(selectedDate, profile.startDate);
+  const weekOptions = useMemo(() => {
+    const finalWeek = Math.max(
+      2,
+      dietWeekNumber(selectedDate, profile.startDate),
+      dietWeekNumber(today, profile.startDate) + 1,
+    );
+
+    return Array.from({ length: finalWeek }, (_, index) => {
+      const number = index + 1;
+      const start = weekStartForNumber(profile.startDate, number);
+
+      return {
+        number,
+        start,
+        end: addDays(start, 6),
+      };
+    });
+  }, [profile.startDate, selectedDate, today]);
   useEffect(() => {
     let cancelled = false;
 
@@ -693,12 +731,21 @@ export default function DietApp() {
     });
   }
 
+  function chooseWeek(weekNumber: number) {
+    const targetStart = weekStartForNumber(profile.startDate, weekNumber);
+    const weekdayOffset = Math.max(0, Math.min(6, daysBetween(weekStart(selectedDate), selectedDate)));
+    chooseDate(addDays(targetStart, weekdayOffset));
+    setWeekMenuOpen(false);
+  }
+
   function openCalendar() {
+    setWeekMenuOpen(false);
     setCalendarMonth(selectedDate);
     setSheet("calendar");
   }
 
   function openAdjustMeals() {
+    setWeekMenuOpen(false);
     const unlockedMeals = currentDay.meals.filter((meal) => !meal.locked && meal.foods.length === 0);
     setAdjustSelectedMealIds((unlockedMeals.length ? unlockedMeals : currentDay.meals).map((meal) => meal.id));
     setAdjustReset(false);
@@ -706,11 +753,13 @@ export default function DietApp() {
   }
 
   function openNewMeal() {
+    setWeekMenuOpen(false);
     setMealDraft(newMealDraft(currentDay.meals.length + 1));
     setSheet("meal");
   }
 
   function openMeal(meal: Meal) {
+    setWeekMenuOpen(false);
     setMealDraft({
       id: meal.id,
       name: meal.name,
@@ -1015,15 +1064,20 @@ export default function DietApp() {
     return (
       <>
         <div className="topbar">
-          <button className="week-pill" onClick={() => setFullScreen("edit")} title="Edit week">
-            Week <span>1</span>
-          </button>
+          {renderWeekPill()}
           <h1 className="screen-title">{formatHeaderTitle(selectedDate)}</h1>
           <div className="icon-row">
             <button className="icon-button flat" onClick={openCalendar} title="Pick a date">
               <CalendarDays size={26} />
             </button>
-            <button className="icon-button flat" onClick={() => setFullScreen("edit")} title="Edit schedule">
+            <button
+              className="icon-button flat"
+              onClick={() => {
+                setWeekMenuOpen(false);
+                setFullScreen("edit");
+              }}
+              title="Edit schedule"
+            >
               <LayoutGrid size={26} />
             </button>
             <button className="icon-button flat" onClick={() => setSheet("actions")} title="Actions">
@@ -1081,6 +1135,51 @@ export default function DietApp() {
               </div>
             </article>
           ))}
+        </div>
+      </>
+    );
+  }
+
+  function renderWeekPill() {
+    return (
+      <button
+        className="week-pill"
+        type="button"
+        aria-expanded={weekMenuOpen}
+        aria-haspopup="menu"
+        onClick={() => setWeekMenuOpen((open) => !open)}
+        title="Choose week"
+      >
+        Week <span>{currentWeekNumber}</span>
+      </button>
+    );
+  }
+
+  function renderWeekMenu() {
+    if (!weekMenuOpen) {
+      return null;
+    }
+
+    return (
+      <>
+        <button className="week-menu-backdrop" aria-label="Close week picker" onClick={() => setWeekMenuOpen(false)} />
+        <div className="week-menu" role="menu" aria-label="Choose week">
+          {weekOptions.map((week) => {
+            const active = week.number === currentWeekNumber;
+
+            return (
+              <button
+                className="week-menu-item"
+                key={week.number}
+                role="menuitemradio"
+                aria-checked={active}
+                onClick={() => chooseWeek(week.number)}
+              >
+                <span>Week {week.number}</span>
+                {active && <Check size={28} strokeWidth={2.5} />}
+              </button>
+            );
+          })}
         </div>
       </>
     );
@@ -1510,9 +1609,7 @@ export default function DietApp() {
         </div>
 
         <div className="topbar" style={{ paddingTop: 0 }}>
-          <button className="week-pill">
-            Week <span>1</span>
-          </button>
+          {renderWeekPill()}
           <div>
             <div className="header-row" style={{ gap: 6 }}>
               <MacroBadge kind="cal">
@@ -2196,6 +2293,7 @@ export default function DietApp() {
           </button>
         </nav>
       )}
+      {renderWeekMenu()}
       {renderSheets()}
     </div>
   );
