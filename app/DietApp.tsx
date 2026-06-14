@@ -147,6 +147,7 @@ type CopyOptions = {
 const USER_KEY_RE = /^[A-Za-z0-9_-]{24,128}$/;
 const SYNC_KEY_STORAGE = "daily-diet-cloud.sync-key";
 const APP_STATE_PREFIX = "daily-diet-cloud.state.";
+const BOOT_DATE = "2026-06-13";
 
 const EMPTY_TOTALS: Totals = {
   calories: 0,
@@ -244,7 +245,7 @@ function createDefaultProfile(today: string): Profile {
   };
 }
 
-function plannedMeals(sample = false): Meal[] {
+function plannedMeals(sample = false, date = "default"): Meal[] {
   const base = [
     {
       name: "Meal 1",
@@ -263,7 +264,7 @@ function plannedMeals(sample = false): Meal[] {
   ];
 
   return base.map((meal) => ({
-    id: makeId("meal"),
+    id: `meal-${date}-${meal.name.toLowerCase().replaceAll(" ", "-")}`,
     name: meal.name,
     time: meal.time,
     calories: meal.calories,
@@ -271,7 +272,10 @@ function plannedMeals(sample = false): Meal[] {
     fat: meal.fat,
     carbs: meal.carbs,
     locked: false,
-    foods: meal.foods,
+    foods: meal.foods.map((food, index) => ({
+      ...food,
+      id: `food-${date}-${index + 1}`,
+    })),
   }));
 }
 
@@ -288,7 +292,7 @@ function createDay(value: string, profile: Profile, sample = false): DayLog {
       time: "8:30 AM",
       weight: null,
     },
-    meals: plannedMeals(sample),
+    meals: plannedMeals(sample, value),
     workouts: [],
     busyBlocks: [],
   };
@@ -462,11 +466,11 @@ function MiniBadge({
 }
 
 export default function DietApp() {
-  const today = useMemo(() => dateKey(new Date()), []);
-  const [selectedDate, setSelectedDate] = useState(today);
-  const [profile, setProfile] = useState<Profile>(() => createDefaultProfile(today));
+  const [today, setToday] = useState(BOOT_DATE);
+  const [selectedDate, setSelectedDate] = useState(BOOT_DATE);
+  const [profile, setProfile] = useState<Profile>(() => createDefaultProfile(BOOT_DATE));
   const [days, setDays] = useState<Record<string, DayLog>>(() =>
-    seedDays(today, createDefaultProfile(today)),
+    seedDays(BOOT_DATE, createDefaultProfile(BOOT_DATE)),
   );
   const [activeTab, setActiveTab] = useState<Tab>("schedule");
   const [sheet, setSheet] = useState<Sheet>(null);
@@ -492,10 +496,11 @@ export default function DietApp() {
     let cancelled = false;
 
     async function boot() {
+      const localToday = dateKey(new Date());
       const storedKey = localStorage.getItem(SYNC_KEY_STORAGE);
       const nextKey = storedKey && USER_KEY_RE.test(storedKey) ? storedKey : makeSyncKey();
       localStorage.setItem(SYNC_KEY_STORAGE, nextKey);
-      const cached = readCachedState(nextKey);
+      const cached = readCachedState(nextKey, localToday);
 
       await Promise.resolve();
 
@@ -503,13 +508,15 @@ export default function DietApp() {
         return;
       }
 
+      setToday(localToday);
+      setSelectedDate((current) => (current === BOOT_DATE ? localToday : current));
       setSyncKey(nextKey);
       if (cached) {
         setProfile(cached.profile);
         setDays(cached.days);
       }
 
-      void loadCloudKey(nextKey, cached);
+      void loadCloudKey(nextKey, cached, localToday);
     }
 
     void boot();
@@ -552,7 +559,11 @@ export default function DietApp() {
     return () => window.clearTimeout(timer);
   }, [booted, days, profile, syncKey]);
 
-  async function loadCloudKey(key: string, cached: { profile: Profile; days: Record<string, DayLog> } | null = null) {
+  async function loadCloudKey(
+    key: string,
+    cached: { profile: Profile; days: Record<string, DayLog> } | null = null,
+    baseToday = today,
+  ) {
     setSyncStatus("Restoring from cloud");
 
     try {
@@ -565,7 +576,7 @@ export default function DietApp() {
         profile: unknown;
         days: Array<{ date: string; payload: unknown }>;
       };
-      const nextProfile = payload.profile ? normalizeProfile(payload.profile, today) : cached?.profile ?? profile;
+      const nextProfile = payload.profile ? normalizeProfile(payload.profile, baseToday) : cached?.profile ?? profile;
       const nextDays: Record<string, DayLog> = {};
 
       for (const row of payload.days ?? []) {
@@ -575,7 +586,7 @@ export default function DietApp() {
       }
 
       const hasRemoteDays = Object.keys(nextDays).length > 0;
-      const finalDays = hasRemoteDays ? nextDays : cached?.days ?? seedDays(today, nextProfile);
+      const finalDays = hasRemoteDays ? nextDays : cached?.days ?? seedDays(baseToday, nextProfile);
 
       setProfile(nextProfile);
       setDays(finalDays);
@@ -592,7 +603,7 @@ export default function DietApp() {
     }
   }
 
-  function readCachedState(key: string) {
+  function readCachedState(key: string, baseToday = today) {
     const cached = localStorage.getItem(`${APP_STATE_PREFIX}${key}`);
     if (!cached) {
       return null;
@@ -600,7 +611,7 @@ export default function DietApp() {
 
     try {
       const parsed = JSON.parse(cached) as { profile: unknown; days: Record<string, unknown> };
-      const cachedProfile = normalizeProfile(parsed.profile, today);
+      const cachedProfile = normalizeProfile(parsed.profile, baseToday);
       const cachedDays = Object.fromEntries(
         Object.entries(parsed.days ?? {}).map(([value, day]) => [
           value,
@@ -852,7 +863,7 @@ export default function DietApp() {
     setSyncKey(nextKey);
     setBooted(false);
     setSheet(null);
-    void loadCloudKey(nextKey, readCachedState(nextKey));
+    void loadCloudKey(nextKey, readCachedState(nextKey), today);
   }
 
   function renderBody() {
