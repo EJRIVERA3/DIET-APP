@@ -44,26 +44,32 @@ npm run preview:static
 
 ## 2. Cloudflare Workers (full app, cloud sync works, your own account)
 
-The app is already built for Cloudflare. `wrangler.jsonc` deploys the built worker
-in `dist/`.
+The app is already built for Cloudflare. `vinext build` generates the deploy
+config (`dist/server/wrangler.json`) and owns it, so we don't keep a competing
+root wrangler file — instead `scripts/patch-d1.mjs` injects the real D1 binding
+(from `cloudflare.d1.json`) into the generated config after each build.
 
-**One-time setup:**
+**Currently deployed to:** https://daily-diet-cloud.thedietapp.workers.dev
+
+**One-time setup (already done for this account):**
 
 ```bash
 npx wrangler login                          # opens browser, log into Cloudflare
 npx wrangler d1 create daily-diet-cloud-db  # prints a database_id
+# put the database_id in cloudflare.d1.json
+# register a workers.dev subdomain in the dashboard (Compute > Workers & Pages)
 ```
-
-Paste that `database_id` into `wrangler.jsonc` (replace `REPLACE_WITH_YOUR_D1_DATABASE_ID`).
 
 **Deploy (anytime):**
 
 ```bash
-npm run deploy:cf   # = npm run build && wrangler deploy
+npm run deploy:cf   # = npm run build && node scripts/patch-d1.mjs && wrangler deploy
 ```
 
-Wrangler prints your live `https://daily-diet-cloud.<account>.workers.dev` URL.
 The `/api/diet` route auto-creates its tables in D1 on first use.
+
+> Deploying to a **different** Cloudflare account? Update `cloudflare.d1.json`
+> with that account's `database_id` (or set `D1_DATABASE_ID` in the environment).
 
 > Prefer Supabase instead of D1? Set `SUPABASE_URL` + `SUPABASE_SECRET_KEY` +
 > `BACKUP_DRIVER=supabase` as Worker secrets (`npx wrangler secret put ...`) and run
