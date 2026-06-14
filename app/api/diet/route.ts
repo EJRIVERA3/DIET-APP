@@ -2,24 +2,55 @@ import { env } from "cloudflare:workers";
 
 type DailyRow = {
   day_date: string;
-  payload: string;
+  payload: unknown;
   updated_at: string;
 };
 
 type SettingsRow = {
-  payload: string;
+  payload: unknown;
   updated_at: string;
+};
+
+type RuntimeEnv = {
+  DB?: D1Database;
+  SUPABASE_URL?: string;
+  SUPABASE_SERVICE_ROLE_KEY?: string;
+  SUPABASE_SECRET_KEY?: string;
+  BACKUP_DRIVER?: "d1" | "supabase";
+};
+
+type SupabaseConfig = {
+  url: string;
+  key: string;
 };
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const USER_KEY_RE = /^[A-Za-z0-9_-]{24,128}$/;
 
-function getDb() {
-  if (!env.DB) {
+function getRuntimeEnv() {
+  return env as unknown as RuntimeEnv;
+}
+
+function getD1Db() {
+  const runtimeEnv = getRuntimeEnv();
+
+  if (!runtimeEnv.DB) {
     throw new Error("Cloud backup is unavailable because the D1 binding is missing.");
   }
 
-  return env.DB;
+  return runtimeEnv.DB;
+}
+
+function getSupabaseConfig(): SupabaseConfig | null {
+  const runtimeEnv = getRuntimeEnv();
+  const url = runtimeEnv.SUPABASE_URL?.replace(/\/$/, "");
+  const key = runtimeEnv.SUPABASE_SECRET_KEY ?? runtimeEnv.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !key || runtimeEnv.BACKUP_DRIVER === "d1") {
+    return null;
+  }
+
+  return { url, key };
 }
 
 function assertUserKey(value: unknown): string {
@@ -30,9 +61,13 @@ function assertUserKey(value: unknown): string {
   return value;
 }
 
-function parseJson<T>(value: string | null | undefined, fallback: T): T {
+function parseJson<T>(value: unknown, fallback: T): T {
   if (!value) {
     return fallback;
+  }
+
+  if (typeof value !== "string") {
+    return value as T;
   }
 
   try {
@@ -40,6 +75,30 @@ function parseJson<T>(value: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+async function supabaseRequest<T>(
+  config: SupabaseConfig,
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const response = await fetch(`${config.url}/rest/v1/${path}`, {
+    ...init,
+    headers: {
+      apikey: config.key,
+      Authorization: `Bearer ${config.key}`,
+      "Content-Type": "application/json",
+      ...(init.headers ?? {}),
+    },
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Supabase request failed (${response.status}): ${detail}`);
+  }
+
+  const text = await response.text();
+  return (text ? JSON.parse(text) : null) as T;
 }
 
 async function ensureSchema(db: D1Database) {
@@ -79,7 +138,36 @@ export async function GET(request: Request) {
     const start = url.searchParams.get("start");
     const end = url.searchParams.get("end");
     const hasRange = start && end && DATE_RE.test(start) && DATE_RE.test(end);
-    const db = getDb();
+    const supabase = getSupabaseConfig();
+
+    if (supabase) {
+      const encodedUserKey = encodeURIComponent(userKey);
+      const settingsRows = await supabaseRequest<SettingsRow[]>(
+        supabase,
+        `user_settings?select=payload,updated_at&user_key=eq.${encodedUserKey}&limit=1`,
+      );
+      const dayRange = hasRange
+        ? `&day_date=gte.${encodeURIComponent(start)}&day_date=lte.${encodeURIComponent(end)}`
+        : "";
+      const rows = await supabaseRequest<DailyRow[]>(
+        supabase,
+        `daily_logs?select=day_date,payload,updated_at&user_key=eq.${encodedUserKey}${dayRange}&order=day_date.asc`,
+      );
+      const settings = settingsRows[0];
+
+      return Response.json({
+        profile: parseJson(settings?.payload, null),
+        profileUpdatedAt: settings?.updated_at ?? null,
+        days: rows.map((row) => ({
+          date: row.day_date,
+          payload: parseJson(row.payload, null),
+          updatedAt: row.updated_at,
+        })),
+        backend: "supabase",
+      });
+    }
+
+    const db = getD1Db();
 
     await ensureSchema(db);
 
@@ -110,6 +198,7 @@ export async function GET(request: Request) {
         payload: parseJson(row.payload, null),
         updatedAt: row.updated_at,
       })),
+      backend: "d1",
     });
   } catch (error) {
     return toErrorResponse(error, 400);
@@ -124,8 +213,62 @@ export async function PUT(request: Request) {
       days?: Record<string, unknown>;
     };
     const userKey = assertUserKey(body.userKey);
-    const db = getDb();
     const now = new Date().toISOString();
+    const supabase = getSupabaseConfig();
+
+    if (supabase) {
+      if (body.profile) {
+        await supabaseRequest(
+          supabase,
+          "user_settings?on_conflict=user_key",
+          {
+            method: "POST",
+            headers: {
+              Prefer: "resolution=merge-duplicates,return=minimal",
+            },
+            body: JSON.stringify([
+              {
+                user_key: userKey,
+                payload: body.profile,
+                updated_at: now,
+              },
+            ]),
+          },
+        );
+      }
+
+      const dayRows = Object.entries(body.days ?? {})
+        .filter(([dayDate]) => DATE_RE.test(dayDate))
+        .map(([dayDate, payload]) => ({
+          user_key: userKey,
+          day_date: dayDate,
+          payload,
+          updated_at: now,
+        }));
+
+      if (dayRows.length > 0) {
+        await supabaseRequest(
+          supabase,
+          "daily_logs?on_conflict=user_key,day_date",
+          {
+            method: "POST",
+            headers: {
+              Prefer: "resolution=merge-duplicates,return=minimal",
+            },
+            body: JSON.stringify(dayRows),
+          },
+        );
+      }
+
+      return Response.json({
+        ok: true,
+        backend: "supabase",
+        savedDays: dayRows.length,
+        updatedAt: now,
+      });
+    }
+
+    const db = getD1Db();
     const statements: D1PreparedStatement[] = [];
 
     await ensureSchema(db);
@@ -168,6 +311,7 @@ export async function PUT(request: Request) {
 
     return Response.json({
       ok: true,
+      backend: "d1",
       savedDays: Object.keys(body.days ?? {}).length,
       updatedAt: now,
     });

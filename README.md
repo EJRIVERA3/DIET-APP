@@ -1,70 +1,79 @@
-# vinext-starter
+# Daily Diet Cloud
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+A mobile-first diet schedule app with daily cloud backup. It includes meal and
+macro tracking, copy-day workflows, workouts, busy blocks, weigh-ins, progress,
+and a Cloud Sync key that can restore the same data on iPhone or Android.
 
-## Prerequisites
+## Live Site
+
+The current Sites deployment is:
+
+https://daily-diet-cloud-emilio.covan-group-2760.chatgpt-team.site
+
+The app is configured as a PWA, so phone users can open it in Safari or Chrome
+and add it to the home screen.
+
+## Local Development
+
+Requirements:
 
 - Node.js `>=22.13.0`
 
-## Quick Start
+Commands:
 
 ```bash
 npm install
 npm run dev
+npm run lint
 npm run build
 ```
 
-This starter does not use `wrangler.jsonc`.
+## Cloud Backup
 
-## Included Shape
+The app currently works with Cloudflare D1 on Sites. It also supports Supabase
+as an alternate backend. The API chooses Supabase automatically when
+`SUPABASE_URL` and a server-only Supabase secret/service key are present.
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
+Local environment keys are listed in `.env.example`. Hosted runtime values
+should be set in the hosting provider, not committed to Git.
 
-## Workspace Auth Headers
+## Supabase Setup
 
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
+Create a Supabase project, then run the SQL in:
 
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```text
+supabase/migrations/0001_diet_cloud.sql
 ```
 
-## Useful Commands
+After the tables exist, set these runtime environment variables:
 
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm run db:generate`: generate Drizzle migrations after schema changes
+```text
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_SECRET_KEY=your-server-side-secret-key
+BACKUP_DRIVER=supabase
+```
 
-## Learn More
+Legacy Supabase projects can use `SUPABASE_SERVICE_ROLE_KEY` instead of
+`SUPABASE_SECRET_KEY`. Keep secret/service keys server-side only.
 
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+The migration enables RLS and does not add public policies. The app writes
+through the server API route, so database access is not exposed to the browser.
+
+## Git
+
+This folder is initialized as a Git repository on branch:
+
+```text
+codex/diet-cloud-app
+```
+
+If you want to push to GitHub or another Git host, add your remote and push:
+
+```bash
+git remote add origin <your-repo-url>
+git push -u origin codex/diet-cloud-app
+```
+
+This machine did not have the Git CLI on `PATH` when the project was created, so
+the repository was committed with a local JS Git helper. Installing Git for
+Windows will make the normal commands above work.
