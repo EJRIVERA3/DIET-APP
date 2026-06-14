@@ -41,7 +41,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type Tab = "schedule" | "progress" | "explore" | "more";
-type Sheet = "actions" | "meal" | "copy" | "advanced" | "cloud" | "weighin" | "calendar" | null;
+type Sheet = "actions" | "meal" | "copy" | "advanced" | "cloud" | "weighin" | "calendar" | "adjust" | null;
 type FullScreen = "workout" | "busy" | "edit" | null;
 
 type Profile = {
@@ -144,6 +144,13 @@ type CopyOptions = {
   busy: boolean;
 };
 
+type AdjustedMeal = Meal & {
+  adjustedCalories: number;
+  adjustedProtein: number;
+  adjustedFat: number;
+  adjustedCarbs: number;
+};
+
 const USER_KEY_RE = /^[A-Za-z0-9_-]{24,128}$/;
 const SYNC_KEY_STORAGE = "daily-diet-cloud.sync-key";
 const APP_STATE_PREFIX = "daily-diet-cloud.state.";
@@ -211,6 +218,15 @@ function formatShortDate(value: string) {
     month: "short",
     day: "numeric",
   }).format(parseDateKey(value));
+}
+
+function formatSheetDate(value: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+  })
+    .format(parseDateKey(value))
+    .toUpperCase();
 }
 
 function formatGoalDate(value: string) {
@@ -404,6 +420,17 @@ function clamp(value: number, min = 0) {
   return Number.isFinite(value) ? Math.max(min, Math.round(value)) : min;
 }
 
+function distributeValue(total: number, count: number, index: number) {
+  if (count <= 0) {
+    return 0;
+  }
+
+  const safeTotal = clamp(total);
+  const base = Math.floor(safeTotal / count);
+  const remainder = safeTotal - base * count;
+  return base + (index < remainder ? 1 : 0);
+}
+
 function underText(value: number, unit = "") {
   if (value > 0) {
     return `${value}${unit} under`;
@@ -487,6 +514,8 @@ export default function DietApp() {
   const [busyDraft, setBusyDraft] = useState<BusyBlock>(() => newBusyBlock());
   const [weighDraft, setWeighDraft] = useState("");
   const [calendarMonth, setCalendarMonth] = useState(BOOT_DATE);
+  const [adjustSelectedMealIds, setAdjustSelectedMealIds] = useState<string[]>([]);
+  const [adjustReset, setAdjustReset] = useState(false);
   const saveTouchedRef = useRef(false);
 
   const currentDay = days[selectedDate] ?? createDay(selectedDate, profile, sameDay(selectedDate, today));
@@ -669,6 +698,13 @@ export default function DietApp() {
     setSheet("calendar");
   }
 
+  function openAdjustMeals() {
+    const unlockedMeals = currentDay.meals.filter((meal) => !meal.locked && meal.foods.length === 0);
+    setAdjustSelectedMealIds((unlockedMeals.length ? unlockedMeals : currentDay.meals).map((meal) => meal.id));
+    setAdjustReset(false);
+    setSheet("adjust");
+  }
+
   function openNewMeal() {
     setMealDraft(newMealDraft(currentDay.meals.length + 1));
     setSheet("meal");
@@ -761,6 +797,86 @@ export default function DietApp() {
         ...day.weighIn,
         weight: weighDraft.trim() ? Number(weighDraft) : null,
       },
+    }));
+    setSheet(null);
+  }
+
+  function getAdjustedMeals(day = currentDay): AdjustedMeal[] {
+    const selectedIds = new Set(adjustReset ? day.meals.map((meal) => meal.id) : adjustSelectedMealIds);
+    const selectedMeals = day.meals.filter((meal) => selectedIds.has(meal.id));
+    const fixedMeals = day.meals.filter((meal) => !selectedIds.has(meal.id));
+    const fixedTotals = getTotals({
+      ...day,
+      meals: fixedMeals,
+    });
+
+    const remaining = {
+      calories: Math.max(0, day.calories - fixedTotals.calories),
+      protein: Math.max(0, day.protein - fixedTotals.protein),
+      fat: Math.max(0, day.fat - fixedTotals.fat),
+      carbs: Math.max(0, day.carbs - fixedTotals.carbs),
+    };
+
+    let selectedIndex = 0;
+
+    return day.meals.map((meal) => {
+      if (!selectedIds.has(meal.id)) {
+        return {
+          ...meal,
+          adjustedCalories: meal.calories,
+          adjustedProtein: meal.protein,
+          adjustedFat: meal.fat,
+          adjustedCarbs: meal.carbs,
+        };
+      }
+
+      const index = selectedIndex;
+      selectedIndex += 1;
+
+      return {
+        ...meal,
+        adjustedCalories: distributeValue(remaining.calories, selectedMeals.length, index),
+        adjustedProtein: distributeValue(remaining.protein, selectedMeals.length, index),
+        adjustedFat: distributeValue(remaining.fat, selectedMeals.length, index),
+        adjustedCarbs: distributeValue(remaining.carbs, selectedMeals.length, index),
+      };
+    });
+  }
+
+  function getAdjustedTotals(adjustedMeals = getAdjustedMeals()) {
+    return adjustedMeals.reduce(
+      (sum, meal) => ({
+        calories: sum.calories + meal.adjustedCalories,
+        protein: sum.protein + meal.adjustedProtein,
+        fat: sum.fat + meal.adjustedFat,
+        carbs: sum.carbs + meal.adjustedCarbs,
+      }),
+      EMPTY_TOTALS,
+    );
+  }
+
+  function saveAdjustedMeals() {
+    const selectedIds = new Set(
+      adjustReset ? currentDay.meals.map((meal) => meal.id) : adjustSelectedMealIds,
+    );
+    const adjustedMeals = getAdjustedMeals();
+
+    updateDay(selectedDate, (day) => ({
+      ...day,
+      meals: day.meals.map((meal) => {
+        const adjusted = adjustedMeals.find((item) => item.id === meal.id);
+        if (!adjusted || !selectedIds.has(meal.id)) {
+          return meal;
+        }
+
+        return {
+          ...meal,
+          calories: adjusted.adjustedCalories,
+          protein: adjusted.adjustedProtein,
+          fat: adjusted.adjustedFat,
+          carbs: adjusted.adjustedCarbs,
+        };
+      }),
     }));
     setSheet(null);
   }
@@ -1494,7 +1610,147 @@ export default function DietApp() {
           {sheet === "cloud" && renderCloudSheet()}
           {sheet === "weighin" && renderWeighInSheet()}
           {sheet === "calendar" && renderCalendarSheet()}
+          {sheet === "adjust" && renderAdjustMealsSheet()}
         </section>
+      </>
+    );
+  }
+
+  function renderAdjustMealsSheet() {
+    const selectedIds = new Set(adjustReset ? currentDay.meals.map((meal) => meal.id) : adjustSelectedMealIds);
+    const adjustedMeals = getAdjustedMeals();
+    const projectedTotals = getAdjustedTotals(adjustedMeals);
+    const projectedCalorieDelta = currentDay.calories - projectedTotals.calories;
+    const projectedProteinDelta = currentDay.protein - projectedTotals.protein;
+
+    function toggleMeal(id: string) {
+      if (adjustReset) {
+        setAdjustReset(false);
+        setAdjustSelectedMealIds(currentDay.meals.filter((meal) => meal.id !== id).map((meal) => meal.id));
+        return;
+      }
+
+      setAdjustSelectedMealIds((current) =>
+        current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
+      );
+    }
+
+    return (
+      <>
+        <div className="sheet-title-row adjust-title-row">
+          <button className="icon-button flat" onClick={() => setSheet(null)}>
+            Cancel
+          </button>
+          <div>
+            <small>{formatSheetDate(selectedDate)}</small>
+            <h2>Adjust meals</h2>
+          </div>
+          <div className="adjust-title-actions">
+            <button className="icon-button flat" title="Adjust info" aria-label="Adjust info">
+              <Info size={26} />
+            </button>
+            <button className="primary-button" onClick={saveAdjustedMeals}>
+              Save
+            </button>
+          </div>
+        </div>
+
+        <div className="adjust-target-strip">
+          <span>
+            <MiniBadge kind="cal">
+              <Flame size={14} />
+            </MiniBadge>
+            {currentDay.calories}
+          </span>
+          <span>
+            <MiniBadge kind="protein">P</MiniBadge>
+            {currentDay.protein}
+          </span>
+          <span>
+            <MiniBadge kind="fat">F</MiniBadge>
+            {currentDay.fat}
+          </span>
+          <span>
+            <MiniBadge kind="carbs">C</MiniBadge>
+            {currentDay.carbs}
+          </span>
+          <strong>Day targets</strong>
+        </div>
+
+        <div className="adjust-reset-card">
+          <div>
+            <strong>Reset to recommendations</strong>
+            <p>Rebuilds your meal plan from your day targets.</p>
+          </div>
+          <button className={`toggle ${adjustReset ? "on" : ""}`} onClick={() => setAdjustReset(!adjustReset)} aria-pressed={adjustReset} />
+        </div>
+
+        <div className="adjust-meal-list">
+          {adjustedMeals.map((meal) => {
+            const selected = selectedIds.has(meal.id);
+            const changed =
+              meal.adjustedCalories !== meal.calories ||
+              meal.adjustedProtein !== meal.protein ||
+              meal.adjustedFat !== meal.fat ||
+              meal.adjustedCarbs !== meal.carbs;
+
+            return (
+              <article className="adjust-meal-card" key={meal.id}>
+                <div className="adjust-meal-head">
+                  <div className="meal-title">
+                    <Utensils size={25} />
+                    <span className="meal-name">{meal.name}</span>
+                    {meal.foods.length > 0 && <span className="target-pill met">1 food - Targets met</span>}
+                  </div>
+                  <span className="time-pill">{meal.time}</span>
+                  <button
+                    className={`adjust-select ${selected ? "selected" : ""}`}
+                    onClick={() => toggleMeal(meal.id)}
+                    title={selected ? "Include in adjustment" : "Keep current targets"}
+                    aria-label={selected ? `Adjust ${meal.name}` : `Keep ${meal.name}`}
+                  >
+                    {selected && <CheckCircle2 size={26} />}
+                  </button>
+                </div>
+                <MacroLine meal={meal} label={meal.foods.length > 0 ? "Foods" : "Targets"} muted={selected && changed} />
+                {(selected || changed) && (
+                  <MacroLine
+                    meal={{
+                      ...meal,
+                      calories: meal.adjustedCalories,
+                      protein: meal.adjustedProtein,
+                      fat: meal.adjustedFat,
+                      carbs: meal.adjustedCarbs,
+                    }}
+                    label="New"
+                  />
+                )}
+              </article>
+            );
+          })}
+        </div>
+
+        <div className="adjust-projection">
+          <h3>
+            <CalendarDays size={26} /> Your day is projected to be:
+          </h3>
+          <div>
+            <span>
+              <MacroBadge kind="cal">
+                <Flame size={16} />
+              </MacroBadge>
+              Calories
+            </span>
+            <strong>{underText(projectedCalorieDelta)} {"->"} <em>on track</em></strong>
+          </div>
+          <div>
+            <span>
+              <MacroBadge kind="protein">P</MacroBadge>
+              Protein
+            </span>
+            <strong>{underText(projectedProteinDelta, "g")} {"->"} <em>on track</em></strong>
+          </div>
+        </div>
       </>
     );
   }
@@ -1912,7 +2168,7 @@ export default function DietApp() {
           <MacroBadge kind="protein">P</MacroBadge>
           <span>{underText(proteinDelta, "g")}</span>
         </div>
-        <button className="icon-button" onClick={() => setSheet("actions")} title="Actions">
+        <button className="icon-button" onClick={openAdjustMeals} title="Adjust meals">
           <WandSparkles size={28} />
         </button>
       </div>
@@ -2095,6 +2351,40 @@ function ActionRow({
       <span>{label}</span>
       <ChevronRight />
     </button>
+  );
+}
+
+function MacroLine({
+  meal,
+  label,
+  muted,
+}: {
+  meal: Pick<Meal, "calories" | "protein" | "fat" | "carbs">;
+  label: string;
+  muted?: boolean;
+}) {
+  return (
+    <div className={`adjust-macro-line ${muted ? "muted-line" : ""}`}>
+      <span>
+        <MacroBadge kind="cal">
+          <Flame size={16} />
+        </MacroBadge>
+        {meal.calories}
+      </span>
+      <span>
+        <MacroBadge kind="protein">P</MacroBadge>
+        {meal.protein}
+      </span>
+      <span>
+        <MacroBadge kind="fat">F</MacroBadge>
+        {meal.fat}
+      </span>
+      <span>
+        <MacroBadge kind="carbs">C</MacroBadge>
+        {meal.carbs}
+      </span>
+      <strong>{label}</strong>
+    </div>
   );
 }
 
