@@ -80,8 +80,9 @@ button {
 }
 
 .topbar {
+  display: grid;
   gap: 6px;
-  justify-content: space-between;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   min-height: 44px;
   padding: 12px 0 18px;
   position: relative;
@@ -159,25 +160,20 @@ button {
 }
 
 .screen-title {
-  flex: 1;
-  font-size: 21px;
+  font-size: 19px;
   font-weight: 850;
-  left: 50%;
   line-height: 1;
-  max-width: 196px;
   min-width: 0;
   overflow: hidden;
-  position: absolute;
+  position: static;
   text-align: center;
   text-overflow: ellipsis;
-  transform: translateX(-50%);
   white-space: nowrap;
 }
 
 .icon-row {
   display: flex;
   gap: 4px;
-  margin-left: auto;
   position: relative;
   z-index: 1;
 }
@@ -575,6 +571,23 @@ button {
   border-radius: 999px;
   color: #55565d;
   padding: 4px 9px;
+}
+
+.input-day-menu-button {
+  align-items: center;
+  background: #ffffff;
+  border: 0;
+  border-radius: 999px;
+  bottom: calc(144px + env(safe-area-inset-bottom));
+  box-shadow: 0 4px 16px rgb(17 24 39 / 0.22);
+  color: #cc1f35;
+  display: inline-flex;
+  height: 58px;
+  justify-content: center;
+  position: fixed;
+  right: max(14px, calc(50% - 226px));
+  width: 58px;
+  z-index: 21;
 }
 
 .dock {

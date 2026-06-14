@@ -361,8 +361,22 @@ function startDayMeals(date = "default"): Meal[] {
       targetStatus: "met",
       foods: [{ name: "Venti Iced Chai with oat milk and two shots", amount: "1 24 FL OZ" }],
     },
-    { name: "Meal 3", time: "5:00 PM", calories: 445, protein: 35, fat: 15, carbs: 55, targetStatus: undefined, foods: [] },
-    { name: "Meal 4", time: "8:30 PM", calories: 445, protein: 40, fat: 15, carbs: 55, targetStatus: undefined, foods: [] },
+    {
+      name: "Meal 3",
+      time: "4:00 PM",
+      calories: 430,
+      protein: 70,
+      fat: 10,
+      carbs: 15,
+      targetStatus: "under",
+      foods: [
+        { name: "Chicken (Breast)", amount: "COOKED 190 G" },
+        { name: "Seasoning Mix, Mild Chili", amount: "(ABOUT 7.1 TSP) 23 G" },
+        { name: "Mixed Vegetables (Your Choice)", amount: "100 G" },
+        { name: "Jasmine Rice", amount: "(ABOUT 0.4 CUP) 50 G" },
+      ],
+    },
+    { name: "Meal 4", time: "8:30 PM", calories: 460, protein: 5, fat: 20, carbs: 95, targetStatus: undefined, foods: [] },
   ];
 
   return base.map((meal, mealIndex) => ({
@@ -589,19 +603,17 @@ function normalizeStartDayTemplate(day: DayLog, profile: Profile): DayLog {
     return day;
   }
 
-  return {
-    ...day,
-    meals: day.meals.map((meal) => {
-      if (meal.foods.length === 0) {
-        return meal;
-      }
+  const template = createStartDay(day.date, profile);
 
-      return {
-        ...meal,
-        targetStatus: meal.targetStatus ?? "met",
-        countsTowardProgress: false,
-      };
-    }),
+  return {
+    ...template,
+    calories: day.calories,
+    protein: day.protein,
+    fat: day.fat,
+    carbs: day.carbs,
+    stepMin: day.stepMin,
+    stepMax: day.stepMax,
+    weighIn: day.weighIn.weight === null ? template.weighIn : day.weighIn,
   };
 }
 
@@ -1238,6 +1250,8 @@ export default function DietApp() {
   }
 
   function renderSchedule() {
+    const inputDay = isStartDayTemplate(currentDay, profile);
+
     return (
       <>
       <div className="topbar">
@@ -1263,16 +1277,18 @@ export default function DietApp() {
         {renderWeekStrip()}
         {renderMacroGrid(currentDay, loggedTotals)}
 
-        <div className="step-row schedule-step-row header-row">
-          <span className="label-strong header-row" style={{ gap: 8 }}>
-            <Footprints size={22} /> Step count target
-          </span>
-          <strong className="mono">
-            {Math.round(currentDay.stepMin / 1000)} - {Math.round(currentDay.stepMax / 1000)}k
-          </strong>
-        </div>
+        {!inputDay && (
+          <div className="step-row schedule-step-row header-row">
+            <span className="label-strong header-row" style={{ gap: 8 }}>
+              <Footprints size={22} /> Step count target
+            </span>
+            <strong className="mono">
+              {Math.round(currentDay.stepMin / 1000)} - {Math.round(currentDay.stepMax / 1000)}k
+            </strong>
+          </div>
+        )}
 
-        {calorieDelta !== 0 && !isStartDayTemplate(currentDay, profile) && (
+        {calorieDelta !== 0 && !inputDay && (
           <div className="notice">
             <Info size={24} color="#2c95b8" />
             <p>
@@ -1285,6 +1301,11 @@ export default function DietApp() {
         )}
 
         <div className="schedule-list">{renderScheduleItems()}</div>
+        {inputDay && (
+          <button className="input-day-menu-button" onClick={() => setSheet("actions")} title="Day actions">
+            <Menu size={30} />
+          </button>
+        )}
       </>
     );
   }
