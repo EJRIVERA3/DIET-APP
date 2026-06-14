@@ -39,7 +39,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 type Tab = "schedule" | "progress" | "explore" | "more";
 type Sheet = "actions" | "meal" | "copy" | "advanced" | "cloud" | "weighin" | "calendar" | "adjust" | null;
@@ -74,6 +74,7 @@ type Meal = {
   carbs: number;
   locked: boolean;
   foods: Food[];
+  targetStatus?: "met" | "under";
 };
 
 type Workout = {
@@ -202,6 +203,22 @@ function weekStart(value: string) {
   return dateKey(date);
 }
 
+function timeToMinutes(value: string) {
+  const match = value.trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i);
+  if (!match) {
+    return 24 * 60;
+  }
+
+  const [, hourValue, minuteValue = "0", periodValue] = match;
+  const period = periodValue.toUpperCase();
+  let hour = Number(hourValue) % 12;
+  if (period === "PM") {
+    hour += 12;
+  }
+
+  return hour * 60 + Number(minuteValue);
+}
+
 function dateOrdinal(value: string) {
   const date = parseDateKey(value);
   return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000;
@@ -225,7 +242,7 @@ function sameDay(a: string, b: string) {
 
 function formatHeaderTitle(value: string) {
   return new Intl.DateTimeFormat("en-US", {
-    weekday: "short",
+    weekday: "long",
     month: "short",
     day: "numeric",
   }).format(parseDateKey(value));
@@ -288,6 +305,7 @@ function plannedMeals(sample = false, date = "default"): Meal[] {
       protein: sample ? 5 : 40,
       fat: 15,
       carbs: sample ? 30 : 45,
+      targetStatus: sample ? "under" : undefined,
       foods: sample
         ? [{ id: makeId("food"), name: "Cheese Danish", amount: "(ABOUT 1 PIECE) 80 G" }]
         : [],
@@ -313,7 +331,81 @@ function plannedMeals(sample = false, date = "default"): Meal[] {
   }));
 }
 
+function startDayMeals(date = "default"): Meal[] {
+  const base = [
+    {
+      name: "Meal 1",
+      time: "8:00 AM",
+      calories: 485,
+      protein: 40,
+      fat: 25,
+      carbs: 25,
+      targetStatus: "met",
+      foods: [
+        { name: "Turkey Bacon", amount: "COOKED (ABOUT 8.6 SLICES) 65 G" },
+        { name: "Medium Eggs", amount: "(ABOUT 1 EGG) 45 G" },
+        { name: "protein milk", amount: "1 CUP" },
+        { name: "Strawberries (Frozen)", amount: "(ABOUT 0.7 CUPS) 105 G" },
+        { name: "Mangoes (Frozen)", amount: "25 G" },
+        { name: "Honey", amount: "(ABOUT 0.2 TBSP) 5 G" },
+      ],
+    },
+    {
+      name: "Meal 2",
+      time: "12:00 PM",
+      calories: 265,
+      protein: 10,
+      fat: 5,
+      carbs: 45,
+      targetStatus: "met",
+      foods: [{ name: "Venti Iced Chai with oat milk and two shots", amount: "1 24 FL OZ" }],
+    },
+    { name: "Meal 3", time: "5:00 PM", calories: 445, protein: 35, fat: 15, carbs: 55, targetStatus: undefined, foods: [] },
+    { name: "Meal 4", time: "8:30 PM", calories: 445, protein: 40, fat: 15, carbs: 55, targetStatus: undefined, foods: [] },
+  ];
+
+  return base.map((meal, mealIndex) => ({
+    id: `meal-${date}-${meal.name.toLowerCase().replaceAll(" ", "-")}`,
+    name: meal.name,
+    time: meal.time,
+    calories: meal.calories,
+    protein: meal.protein,
+    fat: meal.fat,
+    carbs: meal.carbs,
+    locked: false,
+    targetStatus: meal.targetStatus,
+    foods: meal.foods.map((food, foodIndex) => ({
+      id: `food-${date}-${mealIndex + 1}-${foodIndex + 1}`,
+      name: food.name,
+      amount: food.amount,
+    })),
+  }));
+}
+
+function createStartDay(value: string, profile: Profile): DayLog {
+  return {
+    date: value,
+    calories: profile.calories,
+    protein: profile.protein,
+    fat: profile.fat,
+    carbs: profile.carbs,
+    stepMin: profile.stepMin,
+    stepMax: profile.stepMax,
+    weighIn: {
+      time: "8:30 AM",
+      weight: profile.startWeight,
+    },
+    meals: startDayMeals(value),
+    workouts: [],
+    busyBlocks: [],
+  };
+}
+
 function createDay(value: string, profile: Profile, sample = false): DayLog {
+  if (sameDay(value, profile.startDate) && !sample) {
+    return createStartDay(value, profile);
+  }
+
   return {
     date: value,
     calories: profile.calories,
@@ -370,7 +462,7 @@ function normalizeDay(value: unknown, date: string, profile: Profile): DayLog {
   const busyBlocks = Array.isArray(source.busyBlocks) ? source.busyBlocks : [];
   const weighIn = source.weighIn && typeof source.weighIn === "object" ? source.weighIn : defaults.weighIn;
 
-  return {
+  const day = {
     date,
     calories: Number(source.calories ?? defaults.calories),
     protein: Number(source.protein ?? defaults.protein),
@@ -391,6 +483,7 @@ function normalizeDay(value: unknown, date: string, profile: Profile): DayLog {
       fat: Number(meal.fat ?? 0),
       carbs: Number(meal.carbs ?? 0),
       locked: Boolean(meal.locked),
+      targetStatus: meal.targetStatus === "met" || meal.targetStatus === "under" ? meal.targetStatus : undefined,
       foods: Array.isArray(meal.foods)
         ? meal.foods.map((food) => ({
             id: food.id ?? makeId("food"),
@@ -416,6 +509,8 @@ function normalizeDay(value: unknown, date: string, profile: Profile): DayLog {
       optimize: Boolean(block.optimize),
     })),
   };
+
+  return hydrateStartDayIfEmpty(day, profile);
 }
 
 function getTotals(day: DayLog | null | undefined): Totals {
@@ -453,6 +548,29 @@ function getLoggedTotals(day: DayLog | null | undefined): Totals {
   }, EMPTY_TOTALS);
 }
 
+function hydrateStartDayIfEmpty(day: DayLog, profile: Profile): DayLog {
+  if (
+    !sameDay(day.date, profile.startDate) ||
+    day.weighIn.weight !== null ||
+    day.meals.some((meal) => meal.foods.length > 0) ||
+    day.workouts.length > 0 ||
+    day.busyBlocks.length > 0
+  ) {
+    return day;
+  }
+
+  const hydrated = createStartDay(day.date, profile);
+  return {
+    ...hydrated,
+    calories: day.calories,
+    protein: day.protein,
+    fat: day.fat,
+    carbs: day.carbs,
+    stepMin: day.stepMin,
+    stepMax: day.stepMax,
+  };
+}
+
 function clamp(value: number, min = 0) {
   return Number.isFinite(value) ? Math.max(min, Math.round(value)) : min;
 }
@@ -478,6 +596,10 @@ function underText(value: number, unit = "") {
   }
 
   return "on target";
+}
+
+function foodCountText(count: number) {
+  return `${count} ${count === 1 ? "food" : "foods"}`;
 }
 
 function percent(value: number, target: number) {
@@ -805,6 +927,7 @@ export default function DietApp() {
       fat: clamp(mealDraft.fat),
       carbs: clamp(mealDraft.carbs),
       locked: mealDraft.locked,
+      targetStatus: undefined,
       foods:
         mealDraft.foodName.trim().length > 0
           ? [
@@ -1087,9 +1210,6 @@ export default function DietApp() {
           {renderWeekPill()}
           <h1 className="screen-title">{formatHeaderTitle(selectedDate)}</h1>
           <div className="icon-row">
-            <button className="icon-button flat" onClick={openCalendar} title="Pick a date">
-              <CalendarDays size={26} />
-            </button>
             <button
               className="icon-button flat"
               onClick={() => {
@@ -1130,32 +1250,7 @@ export default function DietApp() {
           </div>
         )}
 
-        <div className="schedule-list">
-          {renderWeighInCard()}
-          {currentDay.meals.map((meal) => renderMealCard(meal))}
-          {currentDay.workouts.map((workout) => (
-            <article className="card disabled-card" key={workout.id}>
-              <div className="split-row" style={{ justifyContent: "space-between" }}>
-                <strong className="meal-title">
-                  <Dumbbell size={24} /> {workout.type}
-                </strong>
-                <span className="time-pill">{workout.startTime}</span>
-              </div>
-            </article>
-          ))}
-          {currentDay.busyBlocks.map((block) => (
-            <article className="card disabled-card" key={block.id}>
-              <div className="split-row" style={{ justifyContent: "space-between" }}>
-                <strong className="meal-title">
-                  <Clock size={24} /> Busy
-                </strong>
-                <span className="time-pill">
-                  {block.startTime} - {block.endTime}
-                </span>
-              </div>
-            </article>
-          ))}
-        </div>
+        <div className="schedule-list">{renderScheduleItems()}</div>
       </>
     );
   }
@@ -1270,10 +1365,44 @@ export default function DietApp() {
     );
   }
 
+  function renderScheduleItems() {
+    const items = [
+      ...currentDay.meals.map((meal) => ({
+        key: meal.id,
+        order: 1,
+        time: timeToMinutes(meal.time),
+        node: renderMealCard(meal),
+      })),
+      {
+        key: "weigh-in",
+        order: 2,
+        time: timeToMinutes(currentDay.weighIn.time),
+        node: renderWeighInCard(),
+      },
+      ...currentDay.workouts.map((workout) => ({
+        key: workout.id,
+        order: 3,
+        time: timeToMinutes(workout.startTime),
+        node: renderWorkoutCard(workout),
+      })),
+      ...currentDay.busyBlocks.map((block) => ({
+        key: block.id,
+        order: 4,
+        time: timeToMinutes(block.startTime),
+        node: renderBusyCard(block),
+      })),
+    ];
+
+    return items
+      .sort((a, b) => a.time - b.time || a.order - b.order)
+      .map((item) => <Fragment key={item.key}>{item.node}</Fragment>);
+  }
+
   function renderWeighInCard() {
     return (
       <button
-        className="card disabled-card"
+        className={`card disabled-card ${currentDay.weighIn.weight ? "complete-card" : ""}`}
+        key="weigh-in"
         style={{ textAlign: "left" }}
         onClick={() => {
           setWeighDraft(currentDay.weighIn.weight?.toString() ?? "");
@@ -1282,9 +1411,12 @@ export default function DietApp() {
       >
         <div className="split-row" style={{ justifyContent: "space-between" }}>
           <strong className="meal-title">
-            <Gauge size={24} /> Weigh-in
+            <Gauge size={24} />
+            {currentDay.weighIn.weight && <CheckCircle2 className="weigh-check" size={18} />}
+            <span>Weigh-in</span>
+            {currentDay.weighIn.weight && <span className="weigh-value">{currentDay.weighIn.weight} lb</span>}
           </strong>
-          <span className="time-pill">{currentDay.weighIn.weight ?? currentDay.weighIn.time}</span>
+          <span className="time-pill">{currentDay.weighIn.time}</span>
         </div>
       </button>
     );
@@ -1292,6 +1424,9 @@ export default function DietApp() {
 
   function renderMealCard(meal: Meal) {
     const under = meal.calories < 420 || meal.protein < 25;
+    const foodCount = meal.foods.length;
+    const targetStatus = meal.targetStatus ?? (foodCount > 0 ? (under ? "under" : "met") : null);
+    const foodStatus = targetStatus ? `${foodCountText(foodCount)} - ${targetStatus === "under" ? "Under targets" : "Targets met"}` : null;
 
     return (
       <article className="card" key={meal.id}>
@@ -1303,7 +1438,12 @@ export default function DietApp() {
           <div className="meal-title">
             <Utensils size={25} />
             <span className="meal-name">{meal.name}</span>
-            {under && <span className="target-pill">1 food - Under targets</span>}
+            {foodStatus && (
+              <span className={`target-pill ${targetStatus === "under" ? "" : "met"}`}>
+                {targetStatus === "under" ? <X size={13} /> : <Check size={13} />}
+                {foodStatus}
+              </span>
+            )}
           </div>
           <span className="time-pill">{meal.time}</span>
         </button>
@@ -1330,9 +1470,51 @@ export default function DietApp() {
         {meal.foods.map((food) => (
           <div className="food-row" key={food.id}>
             <span>{food.name}</span>
-            <small>{food.amount}</small>
+            {renderFoodAmount(food.amount)}
           </div>
         ))}
+      </article>
+    );
+  }
+
+  function renderFoodAmount(amount: string) {
+    const cookedPrefix = "COOKED ";
+    if (amount.startsWith(cookedPrefix)) {
+      return (
+        <small>
+          <span className="food-state">COOKED</span>
+          <span>{amount.slice(cookedPrefix.length)}</span>
+        </small>
+      );
+    }
+
+    return <small>{amount}</small>;
+  }
+
+  function renderWorkoutCard(workout: Workout) {
+    return (
+      <article className="card disabled-card" key={workout.id}>
+        <div className="split-row" style={{ justifyContent: "space-between" }}>
+          <strong className="meal-title">
+            <Dumbbell size={24} /> {workout.type}
+          </strong>
+          <span className="time-pill">{workout.startTime}</span>
+        </div>
+      </article>
+    );
+  }
+
+  function renderBusyCard(block: BusyBlock) {
+    return (
+      <article className="card disabled-card" key={block.id}>
+        <div className="split-row" style={{ justifyContent: "space-between" }}>
+          <strong className="meal-title">
+            <Clock size={24} /> Busy
+          </strong>
+          <span className="time-pill">
+            {block.startTime} - {block.endTime}
+          </span>
+        </div>
       </article>
     );
   }
