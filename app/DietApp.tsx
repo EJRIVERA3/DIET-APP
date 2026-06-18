@@ -41,10 +41,14 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { computeCoachTips, type CoachTip } from "./coach";
 
 type Tab = "schedule" | "progress" | "explore" | "more";
 type Sheet = "actions" | "meal" | "copy" | "advanced" | "cloud" | "weighin" | "calendar" | "adjust" | null;
-type FullScreen = "workout" | "busy" | "edit" | null;
+type FullScreen = "workout" | "busy" | "edit" | "shopping" | null;
+type ShoppingView = "home" | "this-week" | "next-week" | "custom";
+type ShoppingUnit = "grams" | "oz";
+type ShoppingState = "raw" | "cooked";
 
 type Profile = {
   calories: number;
@@ -158,6 +162,7 @@ type AdjustedMeal = Meal & {
 const USER_KEY_RE = /^[A-Za-z0-9_-]{24,128}$/;
 const SYNC_KEY_STORAGE = "daily-diet-cloud.sync-key";
 const APP_STATE_PREFIX = "daily-diet-cloud.state.";
+const SHOPPING_CUSTOM_KEY = "daily-diet-cloud.shopping-custom";
 const BOOT_DATE = "2026-06-13";
 
 const EMPTY_TOTALS: Totals = {
@@ -773,6 +778,15 @@ export default function DietApp() {
   const [adjustSelectedMealIds, setAdjustSelectedMealIds] = useState<string[]>([]);
   const [adjustReset, setAdjustReset] = useState(false);
   const [weekMenuOpen, setWeekMenuOpen] = useState(false);
+  const [shoppingView, setShoppingView] = useState<ShoppingView>("home");
+  const [shoppingState, setShoppingState] = useState<ShoppingState>("raw");
+  const [shoppingUnit, setShoppingUnit] = useState<ShoppingUnit>("grams");
+  const [shoppingChecked, setShoppingChecked] = useState<string[]>([]);
+  const [customShoppingFoods, setCustomShoppingFoods] = useState<Food[]>([]);
+  const [shoppingHydrated, setShoppingHydrated] = useState(false);
+  const [shoppingAddOpen, setShoppingAddOpen] = useState(false);
+  const [shoppingDraftName, setShoppingDraftName] = useState("");
+  const [shoppingDraftAmount, setShoppingDraftAmount] = useState("");
   const saveTouchedRef = useRef(false);
 
   const currentDay = days[selectedDate] ?? createDay(selectedDate, profile);
@@ -799,6 +813,38 @@ export default function DietApp() {
       };
     });
   }, [profile.startDate, selectedDate, today]);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(SHOPPING_CUSTOM_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          setCustomShoppingFoods(
+            parsed
+              .filter((entry) => entry && typeof entry.name === "string")
+              .map((entry) => ({
+                id: typeof entry.id === "string" ? entry.id : makeId("food"),
+                name: entry.name,
+                amount: typeof entry.amount === "string" ? entry.amount : "",
+              })),
+          );
+        }
+      }
+    } catch {
+      // ignore malformed storage
+    }
+    setShoppingHydrated(true);
+  }, []);
+  useEffect(() => {
+    if (!shoppingHydrated) {
+      return;
+    }
+    try {
+      localStorage.setItem(SHOPPING_CUSTOM_KEY, JSON.stringify(customShoppingFoods));
+    } catch {
+      // ignore storage write failures
+    }
+  }, [customShoppingFoods, shoppingHydrated]);
   useEffect(() => {
     let cancelled = false;
 
@@ -1290,6 +1336,10 @@ export default function DietApp() {
       return renderEditSchedule();
     }
 
+    if (fullScreen === "shopping") {
+      return renderShoppingScreen();
+    }
+
     return (
       <main className="app-main">
         {activeTab === "schedule" && renderSchedule()}
@@ -1297,6 +1347,39 @@ export default function DietApp() {
         {activeTab === "explore" && renderExplore()}
         {activeTab === "more" && renderMore()}
       </main>
+    );
+  }
+
+  function getCoachTips(): CoachTip[] {
+    const weighIns = Object.values(days)
+      .filter((day) => typeof day.weighIn.weight === "number" && day.weighIn.weight)
+      .map((day) => ({ date: day.date, weight: day.weighIn.weight as number }));
+    return computeCoachTips({
+      calorieTarget: Number(currentDay.calories || 0),
+      proteinTarget: Number(currentDay.protein || 0),
+      loggedCalories: loggedTotals.calories,
+      loggedProtein: loggedTotals.protein,
+      isFuture: selectedDate > today,
+      weighIns,
+    });
+  }
+
+  function renderCoachCard() {
+    const tips = getCoachTips();
+    return (
+      <section className="coach-card">
+        <div className="coach-head">
+          <WandSparkles size={20} color="#ef3f49" />
+          <h2>Coach</h2>
+        </div>
+        {tips.map((tip) => (
+          <div key={tip.id} className={`coach-tip ${tip.tone}`}>
+            <span className="coach-dot" />
+            <p>{tip.text}</p>
+          </div>
+        ))}
+        <p className="coach-disclaimer">General guidance, not medical or nutrition advice.</p>
+      </section>
     );
   }
 
@@ -1327,6 +1410,8 @@ export default function DietApp() {
 
         {renderWeekStrip()}
         {renderMacroGrid(currentDay, loggedTotals)}
+
+        {!inputDay && renderCoachCard()}
 
         {!inputDay && (
           <div className="step-row schedule-step-row header-row">
@@ -1773,7 +1858,7 @@ export default function DietApp() {
   function renderMore() {
     const rows: Array<[LucideIcon, string, () => void, string?]> = [
       [Box, "Custom Foods", () => setActiveTab("explore")],
-      [ClipboardList, "Shopping List", () => null],
+      [ClipboardList, "Shopping List", () => { setShoppingView("home"); setFullScreen("shopping"); }],
       [Scale, "Weigh-ins", () => setSheet("weighin")],
       [Share2, "Share Progress", () => null],
       [Settings, "Settings", () => null],
@@ -1995,6 +2080,281 @@ export default function DietApp() {
         <div className="schedule-list" style={{ marginTop: 16 }}>
           {renderWeighInCard()}
           {currentDay.meals.map((meal) => renderMealCard(meal))}
+        </div>
+      </main>
+    );
+  }
+
+  function getShoppingFoods(startDate: string, endDate: string) {
+    const seen: Record<string, string> = {};
+    const order: string[] = [];
+    let date = startDate;
+    while (date <= endDate) {
+      const day = days[date];
+      if (day) {
+        for (const meal of day.meals) {
+          for (const food of meal.foods) {
+            if (!(food.name in seen)) {
+              seen[food.name] = food.amount;
+              order.push(food.name);
+            }
+          }
+        }
+      }
+      date = addDays(date, 1);
+    }
+    return order.map((name) => ({ name, amount: seen[name] }));
+  }
+
+  function parseShoppingFoodName(name: string): { brand: string; product: string } {
+    const commaIdx = name.indexOf(",");
+    if (commaIdx > 0 && commaIdx < name.length - 1) {
+      return { brand: name.slice(0, commaIdx).trim(), product: name.slice(commaIdx + 1).trim() };
+    }
+    return { brand: name, product: name };
+  }
+
+  function formatShoppingAmount(amount: string, unit: ShoppingUnit, state: ShoppingState): { display: string; isRaw: boolean } {
+    const cookedPrefix = "COOKED ";
+    const isCooked = amount.startsWith(cookedPrefix);
+    const base = isCooked ? amount.slice(cookedPrefix.length) : amount;
+    const gMatch = base.match(/(\d+(?:\.\d+)?)\s*G\b/i);
+    const mlMatch = base.match(/(\d+(?:\.\d+)?)\s*ML\b/i);
+
+    if (unit === "oz") {
+      if (gMatch) return { display: `${(parseFloat(gMatch[1]) * 0.035274).toFixed(1)} oz`, isRaw: !isCooked };
+      if (mlMatch) return { display: `${(parseFloat(mlMatch[1]) * 0.033814).toFixed(1)} fl-oz`, isRaw: !isCooked };
+    } else {
+      if (gMatch) return { display: `${gMatch[1]} g`, isRaw: !isCooked };
+      if (mlMatch) return { display: `${mlMatch[1]} ml`, isRaw: !isCooked };
+    }
+    return { display: base, isRaw: !isCooked };
+  }
+
+  function renderShoppingScreen() {
+    const thisWeekStart = weekStart(today);
+    const thisWeekEnd = addDays(thisWeekStart, 6);
+    const nextWeekStart = addDays(thisWeekStart, 7);
+    const nextWeekEnd = addDays(thisWeekStart, 13);
+
+    function openShoppingDetail(view: ShoppingView) {
+      setShoppingChecked([]);
+      setShoppingView(view);
+    }
+
+    function toggleChecked(name: string) {
+      setShoppingChecked((prev) =>
+        prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]
+      );
+    }
+
+    function addCustomFood() {
+      const name = shoppingDraftName.trim();
+      if (!name) {
+        return;
+      }
+      setCustomShoppingFoods((prev) => [...prev, { id: makeId("food"), name, amount: shoppingDraftAmount.trim() }]);
+      setShoppingDraftName("");
+      setShoppingDraftAmount("");
+      setShoppingAddOpen(false);
+    }
+
+    function removeCustomFood(id: string) {
+      setCustomShoppingFoods((prev) => prev.filter((food) => food.id !== id));
+      setShoppingChecked((prev) => prev.filter((key) => key !== `custom:${id}`));
+    }
+
+    if (shoppingView === "home") {
+      return (
+        <main className="full-screen phone-frame">
+          <div className="nav-row">
+            <button className="icon-button flat" onClick={() => setFullScreen(null)} title="Back">
+              <ArrowLeft size={32} />
+            </button>
+            <h1>Shopping List</h1>
+            <span style={{ width: 32 }} />
+          </div>
+          <div className="notice" style={{ flexDirection: "column", alignItems: "flex-start", gap: 12 }}>
+            <p className="muted" style={{ margin: 0 }}>
+              For any meals you have configured, the Shopping List will tell you how much of each food you'll need for the week so that you can make all of your meals to their specifications!
+            </p>
+            <p className="muted" style={{ margin: 0 }}>
+              Choose from one of the default shopping list options or create your own custom list.
+            </p>
+          </div>
+          <div className="schedule-list" style={{ marginTop: 8 }}>
+            <button className="card" style={{ padding: 16, textAlign: "left", width: "100%" }} onClick={() => openShoppingDetail("this-week")}>
+              <div className="split-row" style={{ justifyContent: "space-between" }}>
+                <div>
+                  <strong>This week</strong>
+                  <p className="muted" style={{ margin: "4px 0 0" }}>Dates: {formatShortDate(thisWeekStart)} – {formatShortDate(thisWeekEnd)}</p>
+                </div>
+                <ChevronRight color="#8b8c93" />
+              </div>
+            </button>
+            <button className="card" style={{ padding: 16, textAlign: "left", width: "100%" }} onClick={() => openShoppingDetail("next-week")}>
+              <div className="split-row" style={{ justifyContent: "space-between" }}>
+                <div>
+                  <strong>Next week</strong>
+                  <p className="muted" style={{ margin: "4px 0 0" }}>Dates: {formatShortDate(nextWeekStart)} – {formatShortDate(nextWeekEnd)}</p>
+                </div>
+                <ChevronRight color="#8b8c93" />
+              </div>
+            </button>
+            <button className="card" style={{ padding: 16, textAlign: "left", width: "100%" }} onClick={() => openShoppingDetail("custom")}>
+              <div className="split-row" style={{ justifyContent: "space-between" }}>
+                <div>
+                  <strong>Custom</strong>
+                  <p className="muted" style={{ margin: "4px 0 0" }}>Tap here to create your custom list</p>
+                </div>
+                <ChevronRight color="#8b8c93" />
+              </div>
+            </button>
+          </div>
+        </main>
+      );
+    }
+
+    const isNextWeek = shoppingView === "next-week";
+    const rangeStart = isNextWeek ? nextWeekStart : thisWeekStart;
+    const rangeEnd = isNextWeek ? nextWeekEnd : thisWeekEnd;
+    const title = isNextWeek ? "Next week" : shoppingView === "custom" ? "Custom" : "This week";
+    const foods = shoppingView === "custom" ? [] : getShoppingFoods(rangeStart, rangeEnd);
+    const totalCount = foods.length + customShoppingFoods.length;
+    const checkedCount =
+      foods.filter((f) => shoppingChecked.includes(f.name)).length +
+      customShoppingFoods.filter((f) => shoppingChecked.includes(`custom:${f.id}`)).length;
+
+    return (
+      <main className="full-screen phone-frame" style={{ paddingBottom: 24 }}>
+        <div className="nav-row">
+          <button className="icon-button flat" style={{ display: "flex", alignItems: "center", gap: 4 }} onClick={() => setShoppingView("home")} title="Back">
+            <ArrowLeft size={20} /><span>Back</span>
+          </button>
+          <span />
+          <span style={{ width: 64 }} />
+        </div>
+        <h1 style={{ fontSize: 32, fontWeight: 700, padding: "0 16px 8px" }}>{title}</h1>
+
+        <div style={{ padding: "0 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+          <div className="segment-control">
+            <button className={shoppingState === "raw" ? "active" : ""} onClick={() => setShoppingState("raw")}>Raw</button>
+            <button className={shoppingState === "cooked" ? "active" : ""} onClick={() => setShoppingState("cooked")}>Cooked</button>
+          </div>
+          <div className="segment-control">
+            <button className={shoppingUnit === "grams" ? "active" : ""} onClick={() => setShoppingUnit("grams")}>grams / ml</button>
+            <button className={shoppingUnit === "oz" ? "active" : ""} onClick={() => setShoppingUnit("oz")}>oz / fl oz</button>
+          </div>
+        </div>
+
+        <div className="notice" style={{ flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+          {shoppingView !== "custom" && (
+            <p className="muted" style={{ margin: 0 }}>Dates: {formatShortDate(rangeStart)} – {formatShortDate(rangeEnd)}</p>
+          )}
+          <p className="muted" style={{ margin: 0 }}>Selected: {checkedCount} out of {totalCount} foods</p>
+        </div>
+
+        {foods.length === 0 && customShoppingFoods.length === 0 ? (
+          <p style={{ padding: "16px" }}>
+            {shoppingView === "custom"
+              ? "Tap “Add food” below to start building your custom shopping list."
+              : "You must choose food for at least 1 meal to view the shopping list, or add foods manually below."}
+          </p>
+        ) : (
+          <>
+            {foods.length > 0 && (
+              <>
+                <p className="shopping-section-header">Other foods</p>
+                {foods.map((food) => {
+                  const checked = shoppingChecked.includes(food.name);
+                  const { brand, product } = parseShoppingFoodName(food.name);
+                  const { display: amountDisplay, isRaw } = formatShoppingAmount(food.amount ?? "", shoppingUnit, shoppingState);
+                  const showRawLabel = isRaw && shoppingState === "cooked";
+                  const showCookedLabel = !isRaw && shoppingState === "raw";
+                  return (
+                    <button key={food.name} className="shopping-food-row" onClick={() => toggleChecked(food.name)}>
+                      <span className={`shopping-check ${checked ? "checked" : ""}`}>
+                        <Check size={18} strokeWidth={3} color={checked ? "#ffffff" : "#cccccc"} />
+                      </span>
+                      <span className="shopping-food-info">
+                        <strong>{brand}</strong>
+                        {product !== brand && <span>{product}</span>}
+                        {(showRawLabel || showCookedLabel) && (
+                          <span className="muted" style={{ fontSize: 12 }}>{showRawLabel ? "raw" : "cooked"}</span>
+                        )}
+                      </span>
+                      <span className="shopping-amount muted">{amountDisplay}</span>
+                    </button>
+                  );
+                })}
+              </>
+            )}
+            {customShoppingFoods.length > 0 && (
+              <>
+                <p className="shopping-section-header">Custom foods</p>
+                {customShoppingFoods.map((food) => {
+                  const checkKey = `custom:${food.id}`;
+                  const checked = shoppingChecked.includes(checkKey);
+                  const { brand, product } = parseShoppingFoodName(food.name);
+                  const { display: amountDisplay } = formatShoppingAmount(food.amount ?? "", shoppingUnit, shoppingState);
+                  return (
+                    <div key={checkKey} className="shopping-food-row">
+                      <button className="shopping-toggle" onClick={() => toggleChecked(checkKey)}>
+                        <span className={`shopping-check ${checked ? "checked" : ""}`}>
+                          <Check size={18} strokeWidth={3} color={checked ? "#ffffff" : "#cccccc"} />
+                        </span>
+                        <span className="shopping-food-info">
+                          <strong>{brand}</strong>
+                          {product !== brand && <span>{product}</span>}
+                        </span>
+                        {amountDisplay && <span className="shopping-amount muted">{amountDisplay}</span>}
+                      </button>
+                      <button className="shopping-remove" onClick={() => removeCustomFood(food.id)} aria-label="Remove food">
+                        <X size={18} color="#8b8c93" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </>
+        )}
+
+        <div style={{ padding: 16 }}>
+          {shoppingAddOpen ? (
+            <div className="form-stack">
+              <input
+                className="text-input"
+                placeholder="Food name (e.g. Eggs)"
+                value={shoppingDraftName}
+                autoFocus
+                onChange={(event) => setShoppingDraftName(event.target.value)}
+              />
+              <input
+                className="text-input"
+                placeholder="Amount (e.g. 200 G)"
+                value={shoppingDraftAmount}
+                onChange={(event) => setShoppingDraftAmount(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") addCustomFood(); }}
+              />
+              <div className="split-row" style={{ gap: 12 }}>
+                <button
+                  className="ghost-button"
+                  style={{ flex: 1 }}
+                  onClick={() => { setShoppingAddOpen(false); setShoppingDraftName(""); setShoppingDraftAmount(""); }}
+                >
+                  Cancel
+                </button>
+                <button className="primary-button" style={{ flex: 1 }} onClick={addCustomFood} disabled={!shoppingDraftName.trim()}>
+                  Add food
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button className="ghost-button" style={{ width: "100%" }} onClick={() => setShoppingAddOpen(true)}>
+              <Plus size={20} /> Add food
+            </button>
+          )}
         </div>
       </main>
     );

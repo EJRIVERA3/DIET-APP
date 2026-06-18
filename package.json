@@ -1,5 +1,5 @@
 {
-  "name": "daily-diet-cloud",
+  "name": "the-food-tracker-app",
   "version": "0.1.0",
   "private": true,
   "engines": {
@@ -12,6 +12,7 @@
     "preview:static": "vite preview --config vite.static.config.ts",
     "deploy:cf": "npm run build && node scripts/patch-d1.mjs && wrangler deploy",
     "start": "vinext start",
+    "test": "node --test",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-static --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },
