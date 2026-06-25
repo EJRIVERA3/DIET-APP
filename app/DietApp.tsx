@@ -303,104 +303,24 @@ function createDefaultProfile(today: string): Profile {
   };
 }
 
-function plannedMeals(sample = false, date = "default"): Meal[] {
-  const base = [
-    {
-      name: "Meal 1",
-      time: "9:00 AM",
-      calories: sample ? 275 : 475,
-      protein: sample ? 5 : 40,
-      fat: 15,
-      carbs: sample ? 30 : 45,
-      targetStatus: sample ? "under" : undefined,
-      foods: sample
-        ? [{ id: makeId("food"), name: "Cheese Danish", amount: "(ABOUT 1 PIECE) 80 G" }]
-        : [],
-    },
-    { name: "Meal 2", time: "1:00 PM", calories: 475, protein: 40, fat: 15, carbs: 45, foods: [] },
-    { name: "Meal 3", time: "5:00 PM", calories: 475, protein: 40, fat: 15, carbs: 45, foods: [] },
-    { name: "Meal 4", time: "8:30 PM", calories: 475, protein: 40, fat: 15, carbs: 45, foods: [] },
-  ];
+const MEAL_SLOTS = [
+  { name: "Meal 1", time: "9:00 AM" },
+  { name: "Meal 2", time: "1:00 PM" },
+  { name: "Meal 3", time: "5:00 PM" },
+  { name: "Meal 4", time: "8:30 PM" },
+];
 
-  return base.map((meal) => ({
+function plannedMeals(date = "default"): Meal[] {
+  return MEAL_SLOTS.map((meal) => ({
     id: `meal-${date}-${meal.name.toLowerCase().replaceAll(" ", "-")}`,
     name: meal.name,
     time: meal.time,
-    calories: meal.calories,
-    protein: meal.protein,
-    fat: meal.fat,
-    carbs: meal.carbs,
+    calories: 0,
+    protein: 0,
+    fat: 0,
+    carbs: 0,
     locked: false,
-    foods: meal.foods.map((food, index) => ({
-      ...food,
-      id: `food-${date}-${index + 1}`,
-    })),
-  }));
-}
-
-function startDayMeals(date = "default"): Meal[] {
-  const base = [
-    {
-      name: "Meal 1",
-      time: "8:00 AM",
-      calories: 485,
-      protein: 40,
-      fat: 25,
-      carbs: 25,
-      targetStatus: "met",
-      foods: [
-        { name: "Turkey Bacon", amount: "COOKED (ABOUT 8.6 SLICES) 65 G" },
-        { name: "Medium Eggs", amount: "(ABOUT 1 EGG) 45 G" },
-        { name: "protein milk", amount: "1 CUP" },
-        { name: "Strawberries (Frozen)", amount: "(ABOUT 0.7 CUPS) 105 G" },
-        { name: "Mangoes (Frozen)", amount: "25 G" },
-        { name: "Honey", amount: "(ABOUT 0.2 TBSP) 5 G" },
-      ],
-    },
-    {
-      name: "Meal 2",
-      time: "12:00 PM",
-      calories: 265,
-      protein: 10,
-      fat: 5,
-      carbs: 45,
-      targetStatus: "met",
-      foods: [{ name: "Venti Iced Chai with oat milk and two shots", amount: "1 24 FL OZ" }],
-    },
-    {
-      name: "Meal 3",
-      time: "4:00 PM",
-      calories: 430,
-      protein: 70,
-      fat: 10,
-      carbs: 15,
-      targetStatus: "under",
-      foods: [
-        { name: "Chicken (Breast)", amount: "COOKED 190 G" },
-        { name: "Seasoning Mix, Mild Chili", amount: "(ABOUT 7.1 TSP) 23 G" },
-        { name: "Mixed Vegetables (Your Choice)", amount: "100 G" },
-        { name: "Jasmine Rice", amount: "(ABOUT 0.4 CUP) 50 G" },
-      ],
-    },
-    { name: "Meal 4", time: "8:30 PM", calories: 460, protein: 5, fat: 20, carbs: 95, targetStatus: undefined, foods: [] },
-  ];
-
-  return base.map((meal, mealIndex) => ({
-    id: `meal-${date}-${meal.name.toLowerCase().replaceAll(" ", "-")}`,
-    name: meal.name,
-    time: meal.time,
-    calories: meal.calories,
-    protein: meal.protein,
-    fat: meal.fat,
-    carbs: meal.carbs,
-    locked: false,
-    targetStatus: meal.targetStatus,
-    countsTowardProgress: false,
-    foods: meal.foods.map((food, foodIndex) => ({
-      id: `food-${date}-${mealIndex + 1}-${foodIndex + 1}`,
-      name: food.name,
-      amount: food.amount,
-    })),
+    foods: [],
   }));
 }
 
@@ -417,7 +337,7 @@ function createStartDay(value: string, profile: Profile): DayLog {
       time: "8:30 AM",
       weight: profile.startWeight,
     },
-    meals: startDayMeals(value),
+    meals: plannedMeals(value),
     workouts: [],
     busyBlocks: [],
   };
@@ -440,7 +360,7 @@ function createDay(value: string, profile: Profile, sample = false): DayLog {
       time: "8:30 AM",
       weight: null,
     },
-    meals: plannedMeals(sample, value),
+    meals: plannedMeals(value),
     workouts: [],
     busyBlocks: [],
   };
@@ -534,7 +454,9 @@ function normalizeDay(value: unknown, date: string, profile: Profile): DayLog {
     })),
   };
 
-  return normalizeStartDayTemplate(normalizeLegacySampleDay(hydrateStartDayIfEmpty(day, profile), profile), profile);
+  return emptyDefaultPlannedDay(
+    normalizeStartDayTemplate(normalizeLegacySampleDay(hydrateStartDayIfEmpty(day, profile), profile), profile),
+  );
 }
 
 function getTotals(day: DayLog | null | undefined): Totals {
@@ -673,6 +595,31 @@ function normalizeStartDayTemplate(day: DayLog, profile: Profile): DayLog {
   };
 }
 
+function isDefaultPlannedDay(day: DayLog) {
+  return (
+    day.workouts.length === 0 &&
+    day.busyBlocks.length === 0 &&
+    day.meals.length === 4 &&
+    day.meals.every(
+      (meal, index) =>
+        meal.name === `Meal ${index + 1}` &&
+        meal.foods.length === 0 &&
+        meal.calories === 475 &&
+        meal.protein === 40 &&
+        meal.fat === 15 &&
+        meal.carbs === 45,
+    )
+  );
+}
+
+function emptyDefaultPlannedDay(day: DayLog): DayLog {
+  if (!isDefaultPlannedDay(day)) {
+    return day;
+  }
+
+  return { ...day, meals: plannedMeals(day.date) };
+}
+
 function clamp(value: number, min = 0) {
   return Number.isFinite(value) ? Math.max(min, Math.round(value)) : min;
 }
@@ -763,6 +710,7 @@ export default function DietApp() {
   const [activeTab, setActiveTab] = useState<Tab>("schedule");
   const [sheet, setSheet] = useState<Sheet>(null);
   const [fullScreen, setFullScreen] = useState<FullScreen>(null);
+  const [profileSaved, setProfileSaved] = useState(false);
   const [syncKey, setSyncKey] = useState("");
   const [restoreKey, setRestoreKey] = useState("");
   const [syncStatus, setSyncStatus] = useState("Starting cloud backup");
@@ -1424,7 +1372,7 @@ export default function DietApp() {
           </div>
         )}
 
-        {calorieDelta !== 0 && !inputDay && (
+        {calorieDelta !== 0 && totals.calories > 0 && !inputDay && (
           <div className="notice">
             <Info size={24} color="#2c95b8" />
             <p>
@@ -2042,8 +1990,8 @@ export default function DietApp() {
               <EditableTarget kind="carbs" value={currentDay.carbs} onChange={(carbs) => updateDay(selectedDate, (day) => ({ ...day, carbs }))}>
                 C
               </EditableTarget>
-              <button onClick={() => updateProfile({ calories: currentDay.calories, protein: currentDay.protein, fat: currentDay.fat, carbs: currentDay.carbs })}>
-                <ChevronRight />
+              <button onClick={() => { updateProfile({ calories: currentDay.calories, protein: currentDay.protein, fat: currentDay.fat, carbs: currentDay.carbs }); setProfileSaved(true); setTimeout(() => setProfileSaved(false), 1200); }}>
+                {profileSaved ? <Check size={18} color="#51bf75" /> : <ChevronRight />}
               </button>
             </div>
           </div>
