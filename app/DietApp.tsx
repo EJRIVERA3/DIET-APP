@@ -1604,8 +1604,7 @@ export default function DietApp() {
       >
         <div className="split-row" style={{ justifyContent: "space-between" }}>
           <strong className="meal-title">
-            <Gauge size={24} />
-            {hasWeight && <CheckCircle2 className="weigh-check" size={18} />}
+            <Gauge size={24} color={hasWeight ? "#51bf75" : undefined} />
             <span>Weigh-in</span>
             {hasWeight && <span className="weigh-value">{currentDay.weighIn.weight} lb</span>}
           </strong>
