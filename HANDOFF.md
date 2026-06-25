@@ -13,7 +13,11 @@ a full Cloudflare Workers deployment.
 | Deployment | URL | Capability |
 | --- | --- | --- |
 | GitHub Pages (static) | https://ejrivera3.github.io/DIET-APP/ | Full UI, **single-device** storage (localStorage) |
-| Cloudflare Workers | https://daily-diet-cloud.thedietapp.workers.dev | Full UI **+ cross-device cloud sync** (D1) |
+| Cloudflare Workers | https://the-food-tracker-app.emilio-rivera.workers.dev | Full UI **+ cross-device cloud sync** (D1) |
+
+> The Workers URL is tied to the Cloudflare account you deploy from. It currently lives
+> on `emilio.rivera@covangroup.com` (worker `the-food-tracker-app`). The older
+> `daily-diet-cloud.thedietapp.workers.dev` was a different account and is no longer updated.
 
 ## Key architectural fact (important)
 The app is **local-first**. All UI is `app/DietApp.tsx` (`"use client"`) and always
@@ -43,7 +47,7 @@ per-device. This is why a static build is viable.
 - Instead, `scripts/patch-d1.mjs` injects the real D1 binding into the generated
   config after each build.
 - `cloudflare.d1.json` holds the D1 details (committed; not a secret):
-  - binding `DB`, name `daily-diet-cloud-db`, id `81f74b19-7fa2-4e5d-863b-039730e21f9e`.
+  - binding `DB`, name `daily-diet-cloud-db`, id `af805070-15ad-45fe-9a96-4f6a303fde73`.
 - D1 schema is auto-created by `/api/diet` on first use (`ensureSchema`). Verified
   working (write+read round-trip via `backend: "d1"`).
 

@@ -49,7 +49,13 @@ config (`dist/server/wrangler.json`) and owns it, so we don't keep a competing
 root wrangler file — instead `scripts/patch-d1.mjs` injects the real D1 binding
 (from `cloudflare.d1.json`) into the generated config after each build.
 
-**Currently deployed to:** https://daily-diet-cloud.thedietapp.workers.dev
+**Currently deployed to:** https://the-food-tracker-app.emilio-rivera.workers.dev
+(Cloudflare account `emilio.rivera@covangroup.com`, worker `the-food-tracker-app`.)
+
+> Earlier docs referenced `daily-diet-cloud.thedietapp.workers.dev`, which lived on a
+> different Cloudflare account (`thedietapp`). That deployment is no longer updated.
+> The worker name and `*.workers.dev` subdomain are derived from the logged-in account,
+> so logging in under a different account creates a new URL.
 
 **One-time setup (already done for this account):**
 
