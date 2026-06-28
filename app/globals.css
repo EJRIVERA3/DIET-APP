@@ -1434,3 +1434,319 @@ button {
   background: var(--red);
   color: #ffffff;
 }
+
+/* ── Plan Your Week feature ── */
+
+.plan-week-banner {
+  align-items: center;
+  background: #fff3e0;
+  border: 0;
+  border-radius: 12px;
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 14px 16px;
+  text-align: left;
+  width: 100%;
+}
+
+.plan-week-icon {
+  align-items: center;
+  background: var(--orange);
+  border-radius: 10px;
+  color: #ffffff;
+  display: flex;
+  flex: 0 0 auto;
+  height: 40px;
+  justify-content: center;
+  width: 40px;
+}
+
+.plan-week-label {
+  color: var(--ink);
+  flex: 1;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.plan-week-arrow {
+  align-items: center;
+  background: var(--orange);
+  border-radius: 999px;
+  display: flex;
+  flex: 0 0 auto;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+
+.plan-main {
+  padding-bottom: 100px;
+}
+
+.plan-header {
+  padding-top: 4px;
+  padding-bottom: 20px;
+}
+
+.plan-header-center {
+  text-align: center;
+}
+
+.plan-header-center h1 {
+  font-size: 18px;
+  font-weight: 850;
+  line-height: 1.1;
+  margin: 0;
+}
+
+.plan-subtitle {
+  display: block;
+  font-size: 13px;
+  margin-top: 3px;
+}
+
+.plan-step-count {
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 800;
+  padding: 6px 12px;
+  white-space: nowrap;
+}
+
+.plan-footer {
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  left: 0;
+  padding: 0 16px;
+  position: fixed;
+  right: 0;
+  z-index: 10;
+}
+
+@media (min-width: 480px) {
+  .plan-footer {
+    left: 50%;
+    max-width: 480px;
+    transform: translateX(-50%);
+  }
+}
+
+.plan-next-btn {
+  background: var(--red);
+  border: 0;
+  border-radius: 999px;
+  color: #ffffff;
+  font-size: 17px;
+  font-weight: 800;
+  min-height: 56px;
+  width: 100%;
+}
+
+.plan-next-btn:disabled {
+  opacity: 0.5;
+}
+
+.plan-warning {
+  align-items: flex-start;
+  background: #fff8ec;
+  border-radius: 10px;
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 14px;
+}
+
+.plan-warning p {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.plan-weigh-row {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  min-height: 52px;
+  padding: 8px 0;
+}
+
+.plan-weigh-label {
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.plan-weigh-label strong {
+  margin-right: 6px;
+}
+
+.plan-weigh-btn {
+  background: var(--orange);
+  border: 0;
+  border-radius: 10px;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 700;
+  min-width: 80px;
+  padding: 8px 14px;
+  text-align: center;
+}
+
+.plan-weigh-btn.logged {
+  background: var(--ok);
+}
+
+.plan-weigh-input {
+  background: var(--orange);
+  border: 0;
+  border-radius: 10px;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 700;
+  min-width: 80px;
+  padding: 8px 14px;
+  text-align: center;
+  width: 100px;
+}
+
+.plan-weigh-input::placeholder {
+  color: rgba(255 255 255 / 0.8);
+}
+
+.plan-weigh-future {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.plan-success {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 48px 16px;
+  text-align: center;
+}
+
+.plan-success h2 {
+  font-size: 22px;
+  font-weight: 850;
+  margin: 0;
+}
+
+.plan-centered {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 32px 16px 16px;
+  text-align: center;
+}
+
+.plan-centered h2 {
+  font-size: 21px;
+  font-weight: 850;
+  margin: 0;
+}
+
+.plan-goal-summary {
+  align-items: center;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 16px;
+}
+
+.plan-goal-summary .muted {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+
+.plan-option {
+  align-items: flex-start;
+  background: var(--card);
+  border: 1.5px solid var(--line);
+  border-radius: 12px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding: 16px;
+  text-align: left;
+  width: 100%;
+}
+
+.plan-option.selected {
+  border-color: var(--ink);
+}
+
+.plan-option-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.plan-option-check {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.plan-rp-tag {
+  align-items: center;
+  color: var(--red);
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 700;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.plan-option-details {
+  align-items: center;
+  background: var(--soft);
+  border-radius: 8px;
+  display: flex;
+  font-size: 14px;
+  justify-content: space-between;
+  margin-top: 10px;
+  padding: 8px 12px;
+}
+
+.plan-cal-stats {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+
+.plan-cal-stats .muted {
+  display: block;
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+
+.plan-cal-row {
+  display: flex;
+  gap: 24px;
+}
+
+.plan-cal-row > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.plan-cal-row .muted {
+  font-size: 13px;
+  margin-bottom: 0;
+}
+
+.plan-cal-row strong {
+  font-size: 20px;
+  font-weight: 850;
+}
