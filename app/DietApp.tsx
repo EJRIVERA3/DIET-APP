@@ -26,6 +26,7 @@ import {
   Menu,
   Minus,
   MoreHorizontal,
+  PartyPopper,
   Pencil,
   Plus,
   RefreshCw,
@@ -34,6 +35,7 @@ import {
   Settings,
   Share2,
   Target,
+  TriangleAlert,
   UnlockKeyhole,
   Utensils,
   WandSparkles,
@@ -55,7 +57,15 @@ type Sheet =
   | "adjust"
   | "foodpicker"
   | null;
-type FullScreen = "workout" | "busy" | "edit" | "shopping" | "settings" | "foods" | null;
+type FullScreen =
+  | "workout"
+  | "busy"
+  | "edit"
+  | "shopping"
+  | "settings"
+  | "foods"
+  | "plan-week"
+  | null;
 type ShoppingView = "home" | "this-week" | "next-week" | "custom";
 type ShoppingUnit = "grams" | "oz";
 type ShoppingState = "raw" | "cooked";
@@ -231,6 +241,7 @@ const USER_KEY_RE = /^[A-Za-z0-9_-]{24,128}$/;
 const SYNC_KEY_STORAGE = "daily-diet-cloud.sync-key";
 const APP_STATE_PREFIX = "daily-diet-cloud.state.";
 const SHOPPING_CUSTOM_KEY = "daily-diet-cloud.shopping-custom";
+const PLANNED_WEEKS_KEY = "daily-diet-cloud.planned-weeks";
 const BOOT_DATE = "2026-06-13";
 
 /** How close to its share of the day's targets a meal counts as "on target". */
@@ -895,6 +906,13 @@ export default function DietApp() {
   const [shoppingAddOpen, setShoppingAddOpen] = useState(false);
   const [shoppingDraftName, setShoppingDraftName] = useState("");
   const [shoppingDraftAmount, setShoppingDraftAmount] = useState("");
+  const [planStep, setPlanStep] = useState(1);
+  const [planShowPreview, setPlanShowPreview] = useState(false);
+  const [planGoalChoice, setPlanGoalChoice] = useState<"keep" | "update" | "new" | "end">("keep");
+  const [planCalChoice, setPlanCalChoice] = useState<"repeat-changes" | "repeat" | "custom">("repeat-changes");
+  const [planCustomCal, setPlanCustomCal] = useState(0);
+  const [planWeighDrafts, setPlanWeighDrafts] = useState<Record<string, string>>({});
+  const [plannedWeeks, setPlannedWeeks] = useState<string[]>([]);
   const saveTouchedRef = useRef(false);
 
   const currentDay = days[selectedDate] ?? createDay(selectedDate, profile);
@@ -956,6 +974,29 @@ export default function DietApp() {
       // ignore storage write failures
     }
   }, [customShoppingFoods, shoppingHydrated]);
+  // Reads localStorage, which the server cannot see, so this has to happen after
+  // mount: seeding it in useState would make the client markup diverge from SSR.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(PLANNED_WEEKS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect
+          setPlannedWeeks(parsed.filter((w: unknown) => typeof w === "string"));
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem(PLANNED_WEEKS_KEY, JSON.stringify(plannedWeeks));
+    } catch {
+      // ignore
+    }
+  }, [plannedWeeks]);
   useEffect(() => {
     let cancelled = false;
 
@@ -1776,6 +1817,10 @@ export default function DietApp() {
       return renderCustomFoodsScreen();
     }
 
+    if (fullScreen === "plan-week") {
+      return renderPlanWeek();
+    }
+
     return (
       <main className="app-main">
         {activeTab === "schedule" && renderSchedule()}
@@ -1784,6 +1829,810 @@ export default function DietApp() {
         {activeTab === "more" && renderMore()}
       </main>
     );
+  }
+
+  function openPlanWeek() {
+    const reviewWkStart = weekStart(today);
+    const drafts: Record<string, string> = {};
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(reviewWkStart, i);
+      const w = days[d]?.weighIn.weight;
+      if (w !== null && w !== undefined) {
+        drafts[d] = w.toString();
+      }
+    }
+    setPlanWeighDrafts(drafts);
+    setPlanStep(1);
+    setPlanShowPreview(false);
+    setPlanGoalChoice("keep");
+    setPlanCalChoice("repeat-changes");
+    setPlanCustomCal(profile.calories);
+    setFullScreen("plan-week");
+  }
+
+  function renderPlanWeekBanner() {
+    const nextWkStart = addDays(weekStart(today), 7);
+    if (plannedWeeks.includes(nextWkStart)) return null;
+
+    return (
+      <button className="plan-week-banner" onClick={openPlanWeek}>
+        <div className="plan-week-icon">
+          <ClipboardList size={22} />
+        </div>
+        <span className="plan-week-label">Plan your week to continue</span>
+        <div className="plan-week-arrow">
+          <ChevronRight size={22} color="#ffffff" />
+        </div>
+      </button>
+    );
+  }
+
+  function renderPlanWeek() {
+    const reviewWkStart = weekStart(today);
+    const reviewWkEnd = addDays(reviewWkStart, 6);
+    const nextWkStart = addDays(reviewWkStart, 7);
+    const nextWeekNumber = dietWeekNumber(nextWkStart, profile.startDate);
+    const reviewDays = Array.from({ length: 7 }, (_, i) => addDays(reviewWkStart, i));
+    const reviewWeighIns = reviewDays.filter((d) => {
+      const day = days[d];
+      return day && day.weighIn.weight !== null && day.weighIn.weight !== undefined;
+    });
+    const outstandingMeals = reviewDays
+      .filter((d) => d <= today)
+      .flatMap((d) => {
+        const day = days[d];
+        if (!day) return [];
+        return day.meals.filter((m) => m.foods.length === 0).map((m) => ({ date: d, meal: m }));
+      });
+    const allWeighIns = Object.values(days)
+      .filter((d) => d.weighIn.weight !== null && d.weighIn.weight !== undefined)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const currentWeight = allWeighIns.at(-1)?.weighIn.weight ?? profile.startWeight;
+    const change = currentWeight - profile.startWeight;
+    const daysElapsed = daysBetween(profile.startDate, today);
+    const weightPerDay = daysElapsed > 0 ? (currentWeight - profile.startWeight) / daysElapsed : 0;
+    const daysToGoal = daysBetween(today, profile.goalDate);
+    const predictedFinalWeight = Math.round((currentWeight + weightPerDay * daysToGoal) * 10) / 10;
+    const goalDiff = Math.abs(predictedFinalWeight - profile.goalWeight);
+    const paceGood = goalDiff <= 2;
+    const paceSlightlyOff = goalDiff > 2 && goalDiff <= 8;
+    const weekCalTarget = days[reviewWkStart]?.calories ?? profile.calories;
+    const weekAvgLogged = Math.round(
+      reviewDays.reduce((sum, d) => sum + getLoggedTotals(days[d]).calories, 0) / 7,
+    );
+    const nextCalories = planCalChoice === "custom" ? planCustomCal : weekCalTarget;
+    const dateRange = `${formatShortDate(reviewWkStart)} to ${formatShortDate(reviewWkEnd)}`;
+
+    function planStepHeader(title: string, subtitle: string) {
+      return (
+        <div className="nav-row plan-header">
+          <button
+            className="icon-button flat"
+            onClick={() => {
+              if (planStep > 1) setPlanStep((s) => s - 1);
+              else setFullScreen(null);
+            }}
+          >
+            <ArrowLeft size={28} />
+          </button>
+          <div className="plan-header-center">
+            <h1>{title}</h1>
+            {subtitle && <span className="muted plan-subtitle">{subtitle}</span>}
+          </div>
+          <div className="plan-step-count">{planStep}/5</div>
+        </div>
+      );
+    }
+
+    function planNextBtn(disabled = false) {
+      return (
+        <div className="plan-footer">
+          <button
+            className="plan-next-btn"
+            disabled={disabled}
+            onClick={() => {
+              if (planStep < 5) setPlanStep((s) => s + 1);
+              else setPlanShowPreview(true);
+            }}
+          >
+            Next
+          </button>
+        </div>
+      );
+    }
+
+    if (planShowPreview) {
+      const firstDay = nextWkStart;
+      const firstDayData = days[firstDay] ?? createDay(firstDay, profile);
+
+      return (
+        <main className="app-main plan-main">
+          <div className="nav-row plan-header">
+            <button
+              className="icon-button flat"
+              onClick={() => {
+                setPlanShowPreview(false);
+                setPlanStep(5);
+              }}
+            >
+              <ArrowLeft size={28} />
+            </button>
+            <h1>Preview and confirm</h1>
+            <button className="primary-button" onClick={commitPlanWeek}>
+              Save
+            </button>
+          </div>
+
+          <div className="topbar" style={{ paddingTop: 0 }}>
+            <div className="week-pill" style={{ pointerEvents: "none" }}>
+              WEEK <span>{nextWeekNumber}</span>
+            </div>
+            <div>
+              <div className="header-row" style={{ gap: 6 }}>
+                <MacroBadge kind="cal">
+                  <Flame size={16} />
+                </MacroBadge>
+                <strong className="mono">{weekCalTarget}</strong>
+              </div>
+              <span className="muted">Trending avg</span>
+            </div>
+            <div>
+              <div className="header-row" style={{ gap: 6 }}>
+                <Target size={24} />
+                <strong className="mono">{nextCalories}</strong>
+              </div>
+              <span className="muted">Daily target</span>
+            </div>
+            <div />
+          </div>
+
+          <div className="week-strip">
+            {Array.from({ length: 7 }, (_, i) => {
+              const d = addDays(nextWkStart, i);
+              const date = parseDateKey(d);
+              return (
+                <div className={`day-chip ${i === 0 ? "active" : ""}`} key={d}>
+                  <span className="day-letter">
+                    {new Intl.DateTimeFormat("en-US", { weekday: "narrow" }).format(date)}
+                  </span>
+                  <span className="date-dot">{date.getDate()}</span>
+                  <span className="day-target">{nextCalories}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          <h2 className="section-title">{formatHeaderTitle(firstDay)}</h2>
+
+          <div className="card" style={{ padding: 16, marginBottom: 12 }}>
+            <strong>Day targets</strong>
+            <div className="target-grid" style={{ marginTop: 12 }}>
+              <div>
+                <MiniBadge kind="cal">
+                  <Flame size={16} />
+                </MiniBadge>
+                <span className="mono">{nextCalories}</span>
+              </div>
+              <div>
+                <MiniBadge kind="protein">P</MiniBadge>
+                <span className="mono">{firstDayData.protein}</span>
+              </div>
+              <div>
+                <MiniBadge kind="fat">F</MiniBadge>
+                <span className="mono">{firstDayData.fat}</span>
+              </div>
+              <div>
+                <MiniBadge kind="carbs">C</MiniBadge>
+                <span className="mono">{firstDayData.carbs}</span>
+              </div>
+              <div />
+            </div>
+          </div>
+
+          <div className="step-row header-row">
+            <strong className="header-row" style={{ gap: 8 }}>
+              <Footprints /> Step count target
+            </strong>
+            <input
+              className="text-input mono"
+              readOnly
+              value={`${Math.round(firstDayData.stepMin / 1000)} - ${Math.round(firstDayData.stepMax / 1000)}k steps`}
+            />
+          </div>
+          <div className="step-row header-row">
+            <strong className="header-row" style={{ gap: 8 }}>
+              <Utensils /> {firstDayData.meals.length} meals
+            </strong>
+            <span className="time-pill">
+              {firstDayData.meals[0]?.time ?? "9:00 AM"} -{" "}
+              {firstDayData.meals.at(-1)?.time ?? "9:00 PM"}
+            </span>
+          </div>
+
+          <div className="split-row" style={{ justifyContent: "space-between", marginTop: 20 }}>
+            <h2 className="section-title" style={{ margin: 0 }}>
+              Meals and activities
+            </h2>
+            <button className="round-button" onClick={() => setSheet("actions")} title="Add">
+              <Plus size={28} />
+            </button>
+          </div>
+
+          <div className="schedule-list" style={{ marginTop: 12 }}>
+            <article className="card disabled-card">
+              <div className="split-row" style={{ justifyContent: "space-between" }}>
+                <strong className="meal-title">
+                  <Gauge size={24} /> Weigh-in
+                </strong>
+                <span className="time-pill">{firstDayData.weighIn.time}</span>
+              </div>
+            </article>
+            {firstDayData.meals.map((meal) => (
+              <article className="card" key={meal.id}>
+                <div className="meal-card-head" style={{ justifyContent: "space-between" }}>
+                  <strong className="meal-title">
+                    <Utensils size={22} /> {meal.name}
+                  </strong>
+                  <span className="time-pill">{meal.time}</span>
+                </div>
+                <div className="meal-macros">
+                  <div className="macro-value">
+                    <MacroBadge kind="cal">
+                      <Flame size={16} />
+                    </MacroBadge>
+                    <strong>{Math.round(nextCalories / firstDayData.meals.length)}</strong>
+                  </div>
+                  <div className="macro-value">
+                    <MacroBadge kind="protein">P</MacroBadge>
+                    <strong>{Math.round(firstDayData.protein / firstDayData.meals.length)}</strong>
+                  </div>
+                  <div className="macro-value">
+                    <MacroBadge kind="fat">F</MacroBadge>
+                    <strong>{Math.round(firstDayData.fat / firstDayData.meals.length)}</strong>
+                  </div>
+                  <div className="macro-value">
+                    <MacroBadge kind="carbs">C</MacroBadge>
+                    <strong>{Math.round(firstDayData.carbs / firstDayData.meals.length)}</strong>
+                  </div>
+                </div>
+                <div style={{ padding: "2px 0 4px", color: "var(--muted)", fontSize: 13 }}>
+                  Targets
+                </div>
+              </article>
+            ))}
+          </div>
+        </main>
+      );
+    }
+
+    if (planStep === 1) {
+      return (
+        <main className="app-main plan-main">
+          {planStepHeader("Review your weigh-ins", dateRange)}
+
+          <section className="progress-hero">
+            {allWeighIns.length >= 4 ? (
+              renderWeightChart(allWeighIns)
+            ) : (
+              <div>
+                <LineChart size={82} color="#73747a" />
+                <p className="muted" style={{ marginTop: 24 }}>
+                  Your graph will become available once you have four days of weigh-ins.
+                </p>
+              </div>
+            )}
+          </section>
+
+          <h2 className="section-title">Fat loss summary</h2>
+          <div className="summary-grid" style={{ marginBottom: 20 }}>
+            <div>
+              <strong className="muted">Start</strong>
+              <h3>{profile.startWeight} lbs <Scale size={18} /></h3>
+              <p className="muted">{formatShortDate(profile.startDate)}</p>
+            </div>
+            <div>
+              <strong className="muted">Change</strong>
+              <h3>{change === 0 ? "-" : `${change > 0 ? "+" : ""}${change.toFixed(1)} lbs`}</h3>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <strong className="muted">Goal</strong>
+              <h3>{profile.goalWeight} lbs</h3>
+              <p className="muted">{formatShortDate(profile.goalDate)}</p>
+            </div>
+          </div>
+
+          <h2 className="section-title">Weigh-ins</h2>
+          {reviewWeighIns.length < 4 && (
+            <div className="plan-warning">
+              <TriangleAlert size={20} color="#b86b00" />
+              <p>
+                We need at least 4 weigh-ins within 7 days of the week you are trying to program to
+                adjust your plan accurately. Until then, we&apos;ll repeat your last programmed week.
+              </p>
+            </div>
+          )}
+
+          {reviewDays
+            .slice()
+            .reverse()
+            .map((d) => {
+              const dayData = days[d];
+              const weight = dayData?.weighIn.weight;
+              const date = parseDateKey(d);
+              const dayName = new Intl.DateTimeFormat("en-US", { weekday: "short" })
+                .format(date)
+                .toUpperCase();
+              const isPast = d <= today;
+
+              return (
+                <div className="plan-weigh-row" key={d}>
+                  <span className="plan-weigh-label">
+                    <strong>{dayName}</strong> {formatShortDate(d)}
+                  </span>
+                  {isPast ? (
+                    weight !== null && weight !== undefined ? (
+                      <button
+                        className="plan-weigh-btn logged"
+                        onClick={() => {
+                          setWeighDraft(weight.toString());
+                          setSheet("weighin");
+                        }}
+                      >
+                        {weight} lbs
+                      </button>
+                    ) : (
+                      <input
+                        className="plan-weigh-input"
+                        placeholder="- lbs"
+                        inputMode="decimal"
+                        value={planWeighDrafts[d] ?? ""}
+                        onChange={(e) =>
+                          setPlanWeighDrafts((prev) => ({ ...prev, [d]: e.target.value }))
+                        }
+                        onBlur={() => {
+                          const val = parseFloat(planWeighDrafts[d] ?? "");
+                          if (!isNaN(val) && val > 0) {
+                            updateDay(d, (day) => ({
+                              ...day,
+                              weighIn: { ...day.weighIn, weight: val },
+                            }));
+                          }
+                        }}
+                      />
+                    )
+                  ) : (
+                    <span className="plan-weigh-future">-</span>
+                  )}
+                </div>
+              );
+            })}
+
+          {planNextBtn()}
+        </main>
+      );
+    }
+
+    if (planStep === 2) {
+      const allCheckedIn = outstandingMeals.length === 0;
+
+      return (
+        <main className="app-main plan-main">
+          {planStepHeader("Check in meals", dateRange)}
+
+          {allCheckedIn ? (
+            <div className="plan-success">
+              <PartyPopper size={60} color="#37c768" strokeWidth={1.5} />
+              <h2>Excellent work, keep it up!</h2>
+              <p className="muted">
+                Great job checking in your meals this week. You&apos;ve checked in all your meals on
+                time!
+              </p>
+              <button className="ghost-button" style={{ marginTop: 12 }}>
+                See details
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="plan-warning">
+                <TriangleAlert size={20} color="#b86b00" />
+                <p>You have {outstandingMeals.length} outstanding meals to check in.</p>
+              </div>
+
+              {reviewDays
+                .filter((d) => d <= today)
+                .map((d) => {
+                  const day = days[d];
+                  if (!day) return null;
+                  const dayMeals = day.meals.filter((m) => m.foods.length === 0);
+                  if (dayMeals.length === 0) return null;
+                  return (
+                    <div key={d}>
+                      <h3 className="section-title" style={{ marginTop: 16 }}>
+                        {formatSheetDate(d)}
+                      </h3>
+                      {dayMeals.map((meal) => (
+                        <article className="card" key={meal.id} style={{ marginBottom: 8 }}>
+                          <div
+                            className="meal-card-head"
+                            style={{ justifyContent: "space-between", padding: "12px 16px" }}
+                          >
+                            <strong className="meal-title">
+                              <Utensils size={20} />
+                              {meal.name}
+                            </strong>
+                            <span className="time-pill">{meal.time}</span>
+                          </div>
+                          <div className="meal-macros" style={{ padding: "0 16px 12px" }}>
+                            <div className="macro-value">
+                              <MacroBadge kind="cal">
+                                <Flame size={16} />
+                              </MacroBadge>
+                              <strong>{meal.calories}</strong>
+                            </div>
+                            <div className="macro-value">
+                              <MacroBadge kind="protein">P</MacroBadge>
+                              <strong>{meal.protein}</strong>
+                            </div>
+                            <div className="macro-value">
+                              <MacroBadge kind="fat">F</MacroBadge>
+                              <strong>{meal.fat}</strong>
+                            </div>
+                            <div className="macro-value">
+                              <MacroBadge kind="carbs">C</MacroBadge>
+                              <strong>{meal.carbs}</strong>
+                            </div>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  );
+                })}
+
+              <button
+                className="ghost-button"
+                style={{ width: "100%", marginTop: 8, marginBottom: 16 }}
+                onClick={() => {
+                  touch();
+                  setDays((current) => {
+                    const next = { ...current };
+                    for (const d of reviewDays) {
+                      if (d > today) continue;
+                      const day = next[d];
+                      if (!day) continue;
+                      next[d] = {
+                        ...day,
+                        meals: day.meals.map((m) =>
+                          m.foods.length === 0 ? { ...m, targetStatus: "met" as const } : m,
+                        ),
+                      };
+                    }
+                    return next;
+                  });
+                }}
+              >
+                Check in all outstanding meals
+              </button>
+            </>
+          )}
+
+          {planNextBtn()}
+        </main>
+      );
+    }
+
+    if (planStep === 3) {
+      const paceTitle = paceGood
+        ? "You're on track!"
+        : paceSlightlyOff
+          ? "Your pace is slightly off your goal"
+          : "Your pace needs adjustment";
+      const paceMsg = paceGood
+        ? "Great work! Keep up what you're doing."
+        : "You're on track today. Stay consistent and you'll get there.";
+
+      return (
+        <main className="app-main plan-main">
+          {planStepHeader("Review your progress", dateRange)}
+
+          <div className="plan-centered">
+            {paceGood ? (
+              <CheckCircle2 size={52} color="#37c768" strokeWidth={1.5} />
+            ) : (
+              <TriangleAlert size={52} color="#73747a" strokeWidth={1.5} />
+            )}
+            <h2 style={{ marginTop: 16, textAlign: "center" }}>{paceTitle}</h2>
+            <p className="muted" style={{ textAlign: "center" }}>
+              {paceMsg}
+            </p>
+          </div>
+
+          <section className="progress-hero" style={{ marginTop: 24 }}>
+            {allWeighIns.length >= 4 ? (
+              renderWeightChart(allWeighIns)
+            ) : (
+              <div>
+                <LineChart size={82} color="#73747a" />
+                <p className="muted" style={{ marginTop: 24 }}>
+                  Your graph will become available once you have four days of weigh-ins.
+                </p>
+              </div>
+            )}
+          </section>
+
+          {planNextBtn()}
+        </main>
+      );
+    }
+
+    if (planStep === 4) {
+      return (
+        <main className="app-main plan-main">
+          {planStepHeader("Review your goal", "")}
+
+          <div className="plan-goal-summary">
+            <strong>Your goal</strong>
+            <div>
+              <span className="muted">End date</span>
+              <strong>{formatGoalDate(profile.goalDate)}</strong>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <span className="muted">Target</span>
+              <strong>{profile.goalWeight} lbs</strong>
+            </div>
+          </div>
+
+          <h2 className="section-title" style={{ marginTop: 20 }}>
+            Recommended
+          </h2>
+          <button
+            className={`plan-option ${planGoalChoice === "keep" ? "selected" : ""}`}
+            onClick={() => setPlanGoalChoice("keep")}
+          >
+            <div className="plan-option-body">
+              <strong>Keep current goal</strong>
+              <div className="plan-rp-tag">
+                <Target size={13} /> RP Recommended
+              </div>
+              <p className="muted" style={{ margin: "6px 0" }}>
+                Skip to calorie recommendation
+              </p>
+              <div className="plan-option-details">
+                <span>
+                  End date: <strong>{formatGoalDate(profile.goalDate)}</strong>
+                </span>
+                <span>
+                  Target: <strong>{profile.goalWeight} lbs</strong>
+                </span>
+              </div>
+            </div>
+            {planGoalChoice === "keep" && (
+              <CheckCircle2 size={28} className="plan-option-check" />
+            )}
+          </button>
+
+          <h2 className="section-title" style={{ marginTop: 20 }}>
+            More options
+          </h2>
+          <button
+            className={`plan-option ${planGoalChoice === "update" ? "selected" : ""}`}
+            onClick={() => setPlanGoalChoice("update")}
+          >
+            <div className="plan-option-body">
+              <strong>Update target weight</strong>
+              <p className="muted" style={{ margin: "6px 0" }}>
+                We predict you will be {predictedFinalWeight} lbs by the end of your diet on{" "}
+                {formatGoalDate(profile.goalDate)}. Update my diet goal&apos;s target weight from{" "}
+                {profile.goalWeight} lbs, keeping my end date the same.
+              </p>
+              <div className="plan-option-details">
+                <span>
+                  End date: <strong>{formatGoalDate(profile.goalDate)}</strong>
+                </span>
+                <span>
+                  Target: <strong>{predictedFinalWeight} lbs</strong>
+                </span>
+              </div>
+            </div>
+            {planGoalChoice === "update" && (
+              <CheckCircle2 size={28} className="plan-option-check" />
+            )}
+          </button>
+
+          <button
+            className={`plan-option ${planGoalChoice === "new" ? "selected" : ""}`}
+            onClick={() => setPlanGoalChoice("new")}
+          >
+            <div className="plan-option-body">
+              <strong>Choose a new goal</strong>
+              <p className="muted" style={{ margin: "6px 0" }}>
+                I&apos;d like to choose a new end date or target weight.
+              </p>
+            </div>
+            {planGoalChoice === "new" && (
+              <CheckCircle2 size={28} className="plan-option-check" />
+            )}
+          </button>
+
+          <button
+            className={`plan-option ${planGoalChoice === "end" ? "selected" : ""}`}
+            onClick={() => setPlanGoalChoice("end")}
+          >
+            <div className="plan-option-body">
+              <strong>End my diet</strong>
+              <p className="muted" style={{ margin: "6px 0" }}>
+                I&apos;m ready to start my next diet phase.
+              </p>
+            </div>
+            {planGoalChoice === "end" && (
+              <CheckCircle2 size={28} className="plan-option-check" />
+            )}
+          </button>
+
+          {planNextBtn()}
+        </main>
+      );
+    }
+
+    if (planStep === 5) {
+      const hasEnoughWeighIns = reviewWeighIns.length >= 4;
+
+      return (
+        <main className="app-main plan-main">
+          {planStepHeader("Choose calories", dateRange)}
+
+          <div className="plan-cal-stats">
+            <span className="muted">Last week&apos;s average daily calories</span>
+            <div className="plan-cal-row">
+              <div>
+                <span className="muted">Target</span>
+                <strong>{weekCalTarget}</strong>
+              </div>
+              <div>
+                <span className="muted">Consumed</span>
+                <strong>{weekAvgLogged}</strong>
+              </div>
+            </div>
+          </div>
+
+          <div className="plan-goal-summary" style={{ marginTop: 12 }}>
+            <strong>Your goal</strong>
+            <div>
+              <span className="muted">End date</span>
+              <strong>{formatGoalDate(profile.goalDate)}</strong>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <span className="muted">Target</span>
+              <strong>{profile.goalWeight} lbs</strong>
+            </div>
+          </div>
+
+          <h2 className="section-title" style={{ marginTop: 20 }}>
+            Recommended
+          </h2>
+          <button
+            className={`plan-option ${planCalChoice === "repeat-changes" ? "selected" : ""}`}
+            onClick={() => setPlanCalChoice("repeat-changes")}
+          >
+            <div className="plan-option-body">
+              <strong>Repeat this week with schedule changes</strong>
+              <p className="muted" style={{ margin: "6px 0" }}>
+                {hasEnoughWeighIns
+                  ? "Repeat this week's calorie target with any schedule adjustments."
+                  : "Because you didn't weigh in at least 4 times this week, we're not able to provide a recommendation. These calories are the equivalent to what you did last week, taking into account your planned energy expenditure."}
+              </p>
+              <div className="plan-option-details">
+                <span>New target:</span>
+                <strong>{weekCalTarget} calories</strong>
+              </div>
+            </div>
+            {planCalChoice === "repeat-changes" && (
+              <CheckCircle2 size={28} className="plan-option-check" />
+            )}
+          </button>
+
+          <h2 className="section-title" style={{ marginTop: 20 }}>
+            More options
+          </h2>
+          <button
+            className={`plan-option ${planCalChoice === "repeat" ? "selected" : ""}`}
+            onClick={() => setPlanCalChoice("repeat")}
+          >
+            <div className="plan-option-body">
+              <strong>Repeat this week</strong>
+              <p className="muted" style={{ margin: "6px 0" }}>
+                I&apos;m happy with my current progress. I want the same target for next week.
+              </p>
+              <div className="plan-option-details">
+                <span>New target:</span>
+                <strong>{weekCalTarget} calories</strong>
+              </div>
+            </div>
+            {planCalChoice === "repeat" && (
+              <CheckCircle2 size={28} className="plan-option-check" />
+            )}
+          </button>
+
+          <button
+            className={`plan-option ${planCalChoice === "custom" ? "selected" : ""}`}
+            onClick={() => setPlanCalChoice("custom")}
+          >
+            <div className="plan-option-body">
+              <strong>Choose my own calories</strong>
+              <p className="muted" style={{ margin: "6px 0" }}>
+                I&apos;ll set my own calories for next week.
+              </p>
+              {planCalChoice === "custom" && (
+                <input
+                  className="number-input"
+                  inputMode="numeric"
+                  value={planCustomCal}
+                  onChange={(e) => setPlanCustomCal(clamp(Number(e.target.value)))}
+                  style={{ marginTop: 8 }}
+                />
+              )}
+            </div>
+            {planCalChoice === "custom" && (
+              <CheckCircle2 size={28} className="plan-option-check" />
+            )}
+          </button>
+
+          {planNextBtn()}
+        </main>
+      );
+    }
+
+    return null;
+  }
+
+  function commitPlanWeek() {
+    const reviewWkStart = weekStart(today);
+    const nextWkStart = addDays(reviewWkStart, 7);
+    const weekCalTarget = days[reviewWkStart]?.calories ?? profile.calories;
+    const nextCalories = planCalChoice === "custom" ? planCustomCal : weekCalTarget;
+
+    if (planGoalChoice === "update") {
+      const allWeighIns = Object.values(days)
+        .filter((d) => d.weighIn.weight !== null && d.weighIn.weight !== undefined)
+        .sort((a, b) => a.date.localeCompare(b.date));
+      const currentWeight = allWeighIns.at(-1)?.weighIn.weight ?? profile.startWeight;
+      const daysElapsed = daysBetween(profile.startDate, today);
+      const weightPerDay =
+        daysElapsed > 0 ? (currentWeight - profile.startWeight) / daysElapsed : 0;
+      const daysToGoal = daysBetween(today, profile.goalDate);
+      const predicted = Math.round((currentWeight + weightPerDay * daysToGoal) * 10) / 10;
+      updateProfile({ goalWeight: predicted });
+    }
+
+    const templateDay = days[reviewWkStart] ?? createDay(reviewWkStart, profile);
+    touch();
+    setDays((current) => {
+      const next = { ...current };
+      for (let i = 0; i < 7; i++) {
+        const d = addDays(nextWkStart, i);
+        const cloned = cloneDay(templateDay);
+        cloned.date = d;
+        cloned.calories = nextCalories;
+        cloned.weighIn = { time: templateDay.weighIn.time, weight: null };
+        cloned.meals = cloned.meals.map((meal) => ({
+          ...meal,
+          id: makeId("meal"),
+          foods: [],
+          targetStatus: undefined,
+          countsTowardProgress: undefined,
+        }));
+        next[d] = cloned;
+      }
+      return next;
+    });
+
+    setPlannedWeeks((prev) => {
+      const filtered = prev.filter((w) => w !== nextWkStart);
+      return [...filtered, nextWkStart];
+    });
+    setSelectedDate(nextWkStart);
+    setFullScreen(null);
+    setPlanShowPreview(false);
+    setPlanStep(1);
   }
 
   function getCoachTips(): CoachTip[] {
@@ -1876,6 +2725,8 @@ export default function DietApp() {
             </button>
           </div>
         )}
+
+        {!inputDay && renderPlanWeekBanner()}
 
         <div className="schedule-list">{renderScheduleItems()}</div>
         {inputDay && (

@@ -13,7 +13,7 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // GitHub Pages serves project sites under /<repo>/. Override with
 // STATIC_BASE=/ for a custom domain or user/org root page.
-const base = process.env.STATIC_BASE ?? "/DIET-APP/";
+const base = process.env.STATIC_BASE ?? "/The-Food-Tracker-App/";
 
 export default defineConfig({
   base,
