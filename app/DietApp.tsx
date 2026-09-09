@@ -1136,7 +1136,9 @@ export default function DietApp() {
     setSyncStatus("Restoring from cloud");
 
     try {
-      const response = await fetch(`/api/diet?userKey=${encodeURIComponent(key)}`);
+      /* Sync key goes in a header, never the URL: query strings end up in
+         proxy logs, server access logs, browser history and Referer. */
+      const response = await fetch("/api/diet", { headers: { "X-Sync-Key": key } });
       if (!response.ok) {
         throw new Error("Cloud restore failed");
       }
@@ -3125,6 +3127,81 @@ export default function DietApp() {
     );
   }
 
+  /**
+   * What actually happened in a week: only days that have already passed and
+   * have food logged count, so an unlogged week reads as unknown rather than
+   * as success.
+   */
+  function getWeekSummary(startValue: string) {
+    const dates = Array.from({ length: 7 }, (_, index) => addDays(startValue, index));
+    const elapsed = dates.filter((date) => date <= today);
+    const logged = elapsed
+      .map((date) => days[date])
+      .filter((day): day is DayLog => Boolean(day) && getLoggedTotals(day).calories > 0);
+
+    const loggedTotal = logged.reduce((sum, day) => sum + getLoggedTotals(day).calories, 0);
+    const targetTotal = logged.reduce((sum, day) => sum + Number(day.calories || 0), 0);
+    const weekWeighIns = dates
+      .map((date) => days[date])
+      .filter((day) => day && typeof day.weighIn.weight === "number" && day.weighIn.weight);
+
+    return {
+      elapsedDays: elapsed.length,
+      loggedDays: logged.length,
+      avgLogged: logged.length ? Math.round(loggedTotal / logged.length) : 0,
+      avgTarget: logged.length ? Math.round(targetTotal / logged.length) : 0,
+      latestWeight: weekWeighIns.at(-1)?.weighIn.weight ?? null,
+    };
+  }
+
+  function renderWeekAdherence(summary: ReturnType<typeof getWeekSummary>) {
+    if (summary.loggedDays === 0) {
+      return (
+        <div className="notice">
+          <Info size={28} color="#2c95b8" />
+          <div>
+            <strong>Nothing logged yet</strong>
+            <p style={{ margin: 0 }}>
+              Log your meals and this will show how your week is tracking against your targets.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    const gap = summary.avgLogged - summary.avgTarget;
+    const dayCount = `${summary.loggedDays} of ${summary.elapsedDays} ${
+      summary.elapsedDays === 1 ? "day" : "days"
+    } logged`;
+
+    if (Math.abs(gap) <= summary.avgTarget * 0.05) {
+      return (
+        <div className="green-note">
+          <CheckCircle2 size={28} color="var(--ok)" />
+          <div>
+            <strong>On track</strong>
+            <p style={{ margin: 0 }}>
+              Averaging {summary.avgLogged} cal against a {summary.avgTarget} target. {dayCount}.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="notice">
+        <Info size={28} color="#2c95b8" />
+        <div>
+          <strong>{gap > 0 ? "Running over" : "Running under"}</strong>
+          <p style={{ margin: 0 }}>
+            Averaging {summary.avgLogged} cal against a {summary.avgTarget} target,{" "}
+            {Math.abs(gap)} {gap > 0 ? "over" : "under"} a day. {dayCount}.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   function renderProgress() {
     const weighIns = Object.values(days)
       .filter((day) => day.weighIn.weight)
@@ -3133,6 +3210,7 @@ export default function DietApp() {
     const change = latest - profile.startWeight;
     const weekStartValue = weekStart(selectedDate);
     const weekEndValue = addDays(weekStartValue, 6);
+    const weekSummary = getWeekSummary(weekStartValue);
 
     return (
       <>
@@ -3172,17 +3250,11 @@ export default function DietApp() {
           </div>
 
           <h2 className="section-title">This week</h2>
-          <div className="green-note">
-            <CheckCircle2 size={28} color="var(--ok)" />
-            <div>
-              <strong>Great job</strong>
-              <p style={{ margin: 0 }}>You are trending to hit the calories you committed to.</p>
-            </div>
-          </div>
+          {renderWeekAdherence(weekSummary)}
 
           <div className="card" style={{ padding: 16 }}>
             <div className="split-row" style={{ justifyContent: "space-between" }}>
-              <strong>W-1</strong>
+              <strong>W-{dietWeekNumber(weekStartValue, profile.startDate)}</strong>
               <strong>
                 {formatShortDate(weekStartValue)} - {formatShortDate(weekEndValue)}
               </strong>
@@ -3192,15 +3264,17 @@ export default function DietApp() {
             </div>
             <div className="split-row" style={{ justifyContent: "space-between", marginTop: 16 }}>
               <span className="muted">
-                Calories <strong className="mono">{currentDay.calories}</strong>
+                Avg logged{" "}
+                <strong className="mono">{weekSummary.loggedDays ? weekSummary.avgLogged : "-"}</strong>
               </span>
               <span className="muted">
-                Target <strong className="mono">{profile.calories}</strong>
+                Avg target{" "}
+                <strong className="mono">{weekSummary.loggedDays ? weekSummary.avgTarget : "-"}</strong>
               </span>
             </div>
             <div style={{ marginTop: 14 }}>
-              <span className="muted">Weight </span>
-              <strong>{currentDay.weighIn.weight ? `${currentDay.weighIn.weight} lbs` : "- lbs"}</strong>
+              <span className="muted">Latest weigh-in this week </span>
+              <strong>{weekSummary.latestWeight ? `${weekSummary.latestWeight} lbs` : "- lbs"}</strong>
             </div>
           </div>
 
