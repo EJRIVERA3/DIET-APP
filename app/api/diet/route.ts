@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { summarizeDay } from "../../day-totals";
 
 type DailyRow = {
   day_date: string;
@@ -122,6 +123,29 @@ async function ensureSchema(db: D1Database) {
     ),
     db.prepare(
       "CREATE INDEX IF NOT EXISTS daily_logs_user_date_idx ON daily_logs (user_key, day_date)",
+    ),
+    /* Denormalised mirror of the numbers inside payload, so the coach roster
+       can be one indexed query. Derived data - daily_logs stays canonical. */
+    db.prepare(
+      `CREATE TABLE IF NOT EXISTS daily_totals (
+        user_key TEXT NOT NULL,
+        day_date TEXT NOT NULL,
+        kcal REAL NOT NULL DEFAULT 0,
+        protein REAL NOT NULL DEFAULT 0,
+        fat REAL NOT NULL DEFAULT 0,
+        carbs REAL NOT NULL DEFAULT 0,
+        target_kcal REAL NOT NULL DEFAULT 0,
+        target_protein REAL NOT NULL DEFAULT 0,
+        target_fat REAL NOT NULL DEFAULT 0,
+        target_carbs REAL NOT NULL DEFAULT 0,
+        weight REAL,
+        meals_logged INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_key, day_date)
+      )`,
+    ),
+    db.prepare(
+      "CREATE INDEX IF NOT EXISTS daily_totals_user_date_idx ON daily_totals (user_key, day_date)",
     ),
   ]);
 }
@@ -258,6 +282,38 @@ export async function PUT(request: Request) {
             body: JSON.stringify(dayRows),
           },
         );
+
+        /* Keep the queryable mirror in step with the blob. */
+        const totalRows = dayRows.map((row: { day_date: string; payload: unknown }) => {
+          const totals = summarizeDay(row.payload);
+          return {
+            user_key: userKey,
+            day_date: row.day_date,
+            kcal: totals.kcal,
+            protein: totals.protein,
+            fat: totals.fat,
+            carbs: totals.carbs,
+            target_kcal: totals.targetKcal,
+            target_protein: totals.targetProtein,
+            target_fat: totals.targetFat,
+            target_carbs: totals.targetCarbs,
+            weight: totals.weight,
+            meals_logged: totals.mealsLogged,
+            updated_at: now,
+          };
+        });
+
+        await supabaseRequest(
+          supabase,
+          "daily_totals?on_conflict=user_key,day_date",
+          {
+            method: "POST",
+            headers: {
+              Prefer: "resolution=merge-duplicates,return=minimal",
+            },
+            body: JSON.stringify(totalRows),
+          },
+        );
       }
 
       return Response.json({
@@ -302,6 +358,49 @@ export async function PUT(request: Request) {
                updated_at = excluded.updated_at`,
           )
           .bind(userKey, dayDate, JSON.stringify(payload), now),
+      );
+
+      /* Keep the queryable mirror in step with the blob, in the same batch so
+         the two cannot drift apart on a partial failure. */
+      const totals = summarizeDay(payload);
+
+      statements.push(
+        db
+          .prepare(
+            `INSERT INTO daily_totals (
+               user_key, day_date, kcal, protein, fat, carbs,
+               target_kcal, target_protein, target_fat, target_carbs,
+               weight, meals_logged, updated_at
+             )
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(user_key, day_date) DO UPDATE SET
+               kcal = excluded.kcal,
+               protein = excluded.protein,
+               fat = excluded.fat,
+               carbs = excluded.carbs,
+               target_kcal = excluded.target_kcal,
+               target_protein = excluded.target_protein,
+               target_fat = excluded.target_fat,
+               target_carbs = excluded.target_carbs,
+               weight = excluded.weight,
+               meals_logged = excluded.meals_logged,
+               updated_at = excluded.updated_at`,
+          )
+          .bind(
+            userKey,
+            dayDate,
+            totals.kcal,
+            totals.protein,
+            totals.fat,
+            totals.carbs,
+            totals.targetKcal,
+            totals.targetProtein,
+            totals.targetFat,
+            totals.targetCarbs,
+            totals.weight,
+            totals.mealsLogged,
+            now,
+          ),
       );
     }
 
