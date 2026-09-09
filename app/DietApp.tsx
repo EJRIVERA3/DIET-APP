@@ -44,11 +44,32 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { computeCoachTips, type CoachTip } from "./coach";
 
 type Tab = "schedule" | "progress" | "explore" | "more";
-type Sheet = "actions" | "meal" | "copy" | "advanced" | "cloud" | "weighin" | "calendar" | "adjust" | null;
-type FullScreen = "workout" | "busy" | "edit" | "shopping" | null;
+type Sheet =
+  | "actions"
+  | "meal"
+  | "copy"
+  | "advanced"
+  | "cloud"
+  | "weighin"
+  | "calendar"
+  | "adjust"
+  | "foodpicker"
+  | null;
+type FullScreen = "workout" | "busy" | "edit" | "shopping" | "settings" | "foods" | null;
 type ShoppingView = "home" | "this-week" | "next-week" | "custom";
 type ShoppingUnit = "grams" | "oz";
 type ShoppingState = "raw" | "cooked";
+
+/** A food you saved once, with the nutrition it carries into any meal. */
+type CustomFood = {
+  id: string;
+  name: string;
+  amount: string;
+  calories: number;
+  protein: number;
+  fat: number;
+  carbs: number;
+};
 
 type Profile = {
   calories: number;
@@ -61,9 +82,22 @@ type Profile = {
   startWeight: number;
   goalWeight: number;
   goalDate: string;
+  /** Rides along with the profile so the library syncs to every device. */
+  foods: CustomFood[];
 };
 
 type Food = {
+  id: string;
+  name: string;
+  amount: string;
+  calories: number;
+  protein: number;
+  fat: number;
+  carbs: number;
+};
+
+/** A hand-written shopping list line. Nothing is eaten from it, so it has no macros. */
+type ShoppingItem = {
   id: string;
   name: string;
   amount: string;
@@ -127,22 +161,56 @@ type Totals = {
   carbs: number;
 };
 
+/** A coach you have granted read access to. Mirrors /api/coach/shares. */
+type CoachShare = {
+  id: string;
+  coachId: string;
+  label: string;
+  status: string;
+  scope: string;
+  acceptedAt: string | null;
+  revokedAt: string | null;
+};
+
+/** Weights stay strings while editing so the field can be cleared mid-typing. */
+type SettingsDraft = {
+  calories: number;
+  protein: number;
+  fat: number;
+  carbs: number;
+  stepMin: number;
+  stepMax: number;
+  startDate: string;
+  startWeight: string;
+  goalWeight: string;
+  goalDate: string;
+};
+
+type CustomFoodDraft = {
+  id: string | null;
+  name: string;
+  amount: string;
+  calories: number;
+  protein: number;
+  fat: number;
+  carbs: number;
+};
+
 type MealDraft = {
   id: string | null;
   name: string;
   time: string;
+  /** The planned target. Only used while the meal has no foods of its own. */
   calories: number;
   protein: number;
   fat: number;
   carbs: number;
   locked: boolean;
-  foodName: string;
-  foodAmount: string;
+  foods: Food[];
 };
 
 type CopyOptions = {
   activity: boolean;
-  firstLast: boolean;
   mealCount: boolean;
   meals: boolean;
   mealTargets: boolean;
@@ -165,6 +233,9 @@ const APP_STATE_PREFIX = "daily-diet-cloud.state.";
 const SHOPPING_CUSTOM_KEY = "daily-diet-cloud.shopping-custom";
 const BOOT_DATE = "2026-06-13";
 
+/** How close to its share of the day's targets a meal counts as "on target". */
+const MEAL_TARGET_TOLERANCE = 0.9;
+
 const EMPTY_TOTALS: Totals = {
   calories: 0,
   protein: 0,
@@ -174,7 +245,6 @@ const EMPTY_TOTALS: Totals = {
 
 const DEFAULT_COPY_OPTIONS: CopyOptions = {
   activity: true,
-  firstLast: true,
   mealCount: true,
   meals: true,
   mealTargets: true,
@@ -300,6 +370,7 @@ function createDefaultProfile(today: string): Profile {
     startWeight: 233,
     goalWeight: 220,
     goalDate: addDays(today, 54),
+    foods: [],
   };
 }
 
@@ -393,6 +464,19 @@ function normalizeProfile(value: unknown, today: string): Profile {
     startWeight: Number(source.startWeight ?? defaults.startWeight),
     goalWeight: Number(source.goalWeight ?? defaults.goalWeight),
     goalDate: typeof source.goalDate === "string" ? source.goalDate : defaults.goalDate,
+    foods: Array.isArray(source.foods)
+      ? source.foods
+          .filter((food) => food && typeof food.name === "string")
+          .map((food) => ({
+            id: typeof food.id === "string" ? food.id : makeId("custom-food"),
+            name: food.name,
+            amount: typeof food.amount === "string" ? food.amount : "",
+            calories: clamp(Number(food.calories ?? 0)),
+            protein: clamp(Number(food.protein ?? 0)),
+            fat: clamp(Number(food.fat ?? 0)),
+            carbs: clamp(Number(food.carbs ?? 0)),
+          }))
+      : [],
   };
 }
 
@@ -429,13 +513,9 @@ function normalizeDay(value: unknown, date: string, profile: Profile): DayLog {
       countsTowardProgress:
         typeof meal.countsTowardProgress === "boolean" ? meal.countsTowardProgress : undefined,
       foods: Array.isArray(meal.foods)
-        ? meal.foods.map((food) => ({
-            id: food.id ?? makeId("food"),
-            name: food.name ?? "Food",
-            amount: food.amount ?? "",
-          }))
+        ? meal.foods.map((food, foodIndex) => normalizeMealFood(food, meal, foodIndex))
         : [],
-    })),
+    })).map(withFoodTotals),
     workouts: workouts.map((workout) => ({
       id: workout.id ?? makeId("workout"),
       type: workout.type ?? "weight training",
@@ -457,6 +537,45 @@ function normalizeDay(value: unknown, date: string, profile: Profile): DayLog {
   return emptyDefaultPlannedDay(
     normalizeStartDayTemplate(normalizeLegacySampleDay(hydrateStartDayIfEmpty(day, profile), profile), profile),
   );
+}
+
+function sumFoods(foods: Food[]): Totals {
+  return foods.reduce(
+    (totals, food) => ({
+      calories: totals.calories + Number(food.calories || 0),
+      protein: totals.protein + Number(food.protein || 0),
+      fat: totals.fat + Number(food.fat || 0),
+      carbs: totals.carbs + Number(food.carbs || 0),
+    }),
+    EMPTY_TOTALS,
+  );
+}
+
+/**
+ * A meal that has foods reports what those foods add up to. An empty meal keeps
+ * the macros it was planned with, which is what the day's targets distribute onto.
+ */
+function withFoodTotals(meal: Meal): Meal {
+  return meal.foods.length === 0 ? meal : { ...meal, ...sumFoods(meal.foods) };
+}
+
+function normalizeMealFood(food: Partial<Food>, meal: Partial<Meal>, index: number): Food {
+  // Foods logged before meals tracked per-food nutrition carry none of their own.
+  // Back then a meal held one food and the meal's macros described it, so hand
+  // those down instead of zeroing out every meal anyone has already logged.
+  const inherits = food.calories === undefined && index === 0;
+  const macro = (key: "calories" | "protein" | "fat" | "carbs") =>
+    clamp(Number((inherits ? meal[key] : food[key]) ?? 0));
+
+  return {
+    id: food.id ?? makeId("food"),
+    name: food.name ?? "Food",
+    amount: food.amount ?? "",
+    calories: macro("calories"),
+    protein: macro("protein"),
+    fat: macro("fat"),
+    carbs: macro("carbs"),
+  };
 }
 
 function getTotals(day: DayLog | null | undefined): Totals {
@@ -663,6 +782,38 @@ function cloneDay(day: DayLog): DayLog {
   return JSON.parse(JSON.stringify(day)) as DayLog;
 }
 
+/** Renames default-named meals so their numbers follow the order they are eaten. */
+function renumberMeals(meals: Meal[]): Meal[] {
+  const order = [...meals].sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
+  const positions = new globalThis.Map(order.map((meal, index) => [meal.id, index + 1]));
+
+  return meals.map((meal) =>
+    /^Meal \d+$/.test(meal.name) ? { ...meal, name: `Meal ${positions.get(meal.id)}` } : meal,
+  );
+}
+
+type ShoppingTally = { qty: number; unit: string; cooked: boolean };
+
+const COOKED_PREFIX = "COOKED ";
+
+/** Splits "COOKED 250 G" into its parts so a week's amounts can be added up. */
+function parseShoppingAmount(amount: string): ShoppingTally | null {
+  const cooked = amount.startsWith(COOKED_PREFIX);
+  const base = (cooked ? amount.slice(COOKED_PREFIX.length) : amount).trim();
+  const match = base.match(/^(\d+(?:\.\d+)?)\s*(.*)$/);
+
+  if (!match) {
+    return null;
+  }
+
+  return { qty: Number(match[1]), unit: match[2].trim(), cooked };
+}
+
+function formatShoppingTally(tally: ShoppingTally) {
+  const qty = Number(tally.qty.toFixed(2));
+  return `${tally.cooked ? COOKED_PREFIX : ""}${qty}${tally.unit ? ` ${tally.unit}` : ""}`;
+}
+
 function IconLabel({
   icon: Icon,
   label,
@@ -713,6 +864,9 @@ export default function DietApp() {
   const [profileSaved, setProfileSaved] = useState(false);
   const [syncKey, setSyncKey] = useState("");
   const [restoreKey, setRestoreKey] = useState("");
+  const [coachCode, setCoachCode] = useState("");
+  const [coachShares, setCoachShares] = useState<CoachShare[]>([]);
+  const [coachStatus, setCoachStatus] = useState("");
   const [syncStatus, setSyncStatus] = useState("Starting cloud backup");
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [booted, setBooted] = useState(false);
@@ -722,6 +876,12 @@ export default function DietApp() {
   const [workoutDraft, setWorkoutDraft] = useState<Workout>(() => newWorkout());
   const [busyDraft, setBusyDraft] = useState<BusyBlock>(() => newBusyBlock());
   const [weighDraft, setWeighDraft] = useState("");
+  const [weighError, setWeighError] = useState("");
+  const [dismissedMealTotals, setDismissedMealTotals] = useState<string[]>([]);
+  const [settingsDraft, setSettingsDraft] = useState<SettingsDraft | null>(null);
+  const [settingsError, setSettingsError] = useState("");
+  const [foodDraft, setFoodDraft] = useState<CustomFoodDraft | null>(null);
+  const [foodError, setFoodError] = useState("");
   const [calendarMonth, setCalendarMonth] = useState(BOOT_DATE);
   const [adjustSelectedMealIds, setAdjustSelectedMealIds] = useState<string[]>([]);
   const [adjustReset, setAdjustReset] = useState(false);
@@ -730,7 +890,7 @@ export default function DietApp() {
   const [shoppingState, setShoppingState] = useState<ShoppingState>("raw");
   const [shoppingUnit, setShoppingUnit] = useState<ShoppingUnit>("grams");
   const [shoppingChecked, setShoppingChecked] = useState<string[]>([]);
-  const [customShoppingFoods, setCustomShoppingFoods] = useState<Food[]>([]);
+  const [customShoppingFoods, setCustomShoppingFoods] = useState<ShoppingItem[]>([]);
   const [shoppingHydrated, setShoppingHydrated] = useState(false);
   const [shoppingAddOpen, setShoppingAddOpen] = useState(false);
   const [shoppingDraftName, setShoppingDraftName] = useState("");
@@ -761,12 +921,15 @@ export default function DietApp() {
       };
     });
   }, [profile.startDate, selectedDate, today]);
+  // Reads localStorage, which the server cannot see, so this has to happen after
+  // mount: seeding it in useState would make the client markup diverge from SSR.
   useEffect(() => {
     try {
       const raw = localStorage.getItem(SHOPPING_CUSTOM_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect
           setCustomShoppingFoods(
             parsed
               .filter((entry) => entry && typeof entry.name === "string")
@@ -815,6 +978,13 @@ export default function DietApp() {
       if (cached) {
         setProfile(cached.profile);
         setDays(cached.days);
+      } else {
+        // The initial state is built from BOOT_DATE so server and client render the
+        // same markup. Once mounted, rebuild it from the real date, or a new user
+        // starts on week 14 of a diet whose goal date has already passed.
+        const fresh = createDefaultProfile(localToday);
+        setProfile(fresh);
+        setDays(seedDays(localToday, fresh));
       }
 
       void loadCloudKey(nextKey, cached, localToday);
@@ -860,6 +1030,42 @@ export default function DietApp() {
     return () => window.clearTimeout(timer);
   }, [booted, days, profile, syncKey]);
 
+  /* Refresh the share list whenever the Cloud Sync sheet is opened. The state
+     update happens after the await, not in the effect body. */
+  useEffect(() => {
+    if (sheet !== "cloud" || !syncKey) {
+      return;
+    }
+
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const response = await fetch("/api/coach/shares", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userKey: syncKey }),
+        });
+
+        if (!response.ok || cancelled) {
+          return;
+        }
+
+        const payload = (await response.json()) as { shares?: CoachShare[] };
+
+        if (!cancelled) {
+          setCoachShares(payload.shares ?? []);
+        }
+      } catch {
+        /* sharing is optional */
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sheet, syncKey]);
+
   async function loadCloudKey(
     key: string,
     cached: { profile: Profile; days: Record<string, DayLog> } | null = null,
@@ -877,7 +1083,9 @@ export default function DietApp() {
         profile: unknown;
         days: Array<{ date: string; payload: unknown }>;
       };
-      const nextProfile = payload.profile ? normalizeProfile(payload.profile, baseToday) : cached?.profile ?? profile;
+      const nextProfile = payload.profile
+        ? normalizeProfile(payload.profile, baseToday)
+        : cached?.profile ?? createDefaultProfile(baseToday);
       const nextDays: Record<string, DayLog> = {};
 
       for (const row of payload.days ?? []) {
@@ -1002,14 +1210,13 @@ export default function DietApp() {
       fat: meal.fat,
       carbs: meal.carbs,
       locked: meal.locked,
-      foodName: meal.foods[0]?.name ?? "",
-      foodAmount: meal.foods[0]?.amount ?? "",
+      foods: meal.foods.map((food) => ({ ...food })),
     });
     setSheet("meal");
   }
 
   function saveMeal() {
-    const meal: Meal = {
+    const meal: Meal = withFoodTotals({
       id: mealDraft.id ?? makeId("meal"),
       name: mealDraft.name.trim() || `Meal ${currentDay.meals.length + 1}`,
       time: mealDraft.time.trim() || "12:00 PM",
@@ -1019,23 +1226,14 @@ export default function DietApp() {
       carbs: clamp(mealDraft.carbs),
       locked: mealDraft.locked,
       targetStatus: undefined,
-      foods:
-        mealDraft.foodName.trim().length > 0
-          ? [
-              {
-                id: makeId("food"),
-                name: mealDraft.foodName.trim(),
-                amount: mealDraft.foodAmount.trim(),
-              },
-            ]
-          : [],
-    };
+      foods: mealDraft.foods,
+    });
 
     updateDay(selectedDate, (day) => ({
       ...day,
       meals: mealDraft.id
         ? day.meals.map((item) => (item.id === mealDraft.id ? meal : item))
-        : [...day.meals, meal],
+        : renumberMeals([...day.meals, meal]),
     }));
     setSheet(null);
   }
@@ -1074,14 +1272,209 @@ export default function DietApp() {
   }
 
   function saveWeighIn() {
+    const raw = weighDraft.trim();
+    let weight: number | null = null;
+
+    if (raw) {
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setWeighError("Enter a weight in pounds, for example 182.4.");
+        return;
+      }
+      weight = parsed;
+    }
+
+    setWeighError("");
     updateDay(selectedDate, (day) => ({
       ...day,
-      weighIn: {
-        ...day.weighIn,
-        weight: weighDraft.trim() ? Number(weighDraft) : null,
-      },
+      weighIn: { ...day.weighIn, weight },
     }));
     setSheet(null);
+  }
+
+  function openCustomFoods() {
+    setFoodDraft(null);
+    setFoodError("");
+    setFullScreen("foods");
+  }
+
+  function newFoodDraft(): CustomFoodDraft {
+    return { id: null, name: "", amount: "", calories: 0, protein: 0, fat: 0, carbs: 0 };
+  }
+
+  function editCustomFood(food: CustomFood) {
+    setFoodDraft({ ...food });
+    setFoodError("");
+  }
+
+  function updateFoodDraft(next: Partial<CustomFoodDraft>) {
+    setFoodDraft((current) => (current ? { ...current, ...next } : current));
+    setFoodError("");
+  }
+
+  function saveCustomFood() {
+    if (!foodDraft) {
+      return;
+    }
+
+    const name = foodDraft.name.trim();
+    if (!name) {
+      setFoodError("Give your food a name.");
+      return;
+    }
+
+    const food: CustomFood = {
+      id: foodDraft.id ?? makeId("custom-food"),
+      name,
+      amount: foodDraft.amount.trim(),
+      calories: clamp(foodDraft.calories),
+      protein: clamp(foodDraft.protein),
+      fat: clamp(foodDraft.fat),
+      carbs: clamp(foodDraft.carbs),
+    };
+
+    updateProfile({
+      foods: foodDraft.id
+        ? profile.foods.map((entry) => (entry.id === foodDraft.id ? food : entry))
+        : [...profile.foods, food],
+    });
+    setFoodDraft(null);
+    setFoodError("");
+  }
+
+  function deleteCustomFood(id: string) {
+    updateProfile({ foods: profile.foods.filter((entry) => entry.id !== id) });
+    setFoodDraft(null);
+    setFoodError("");
+  }
+
+  /** Adds a saved food to the meal you are editing, macros and all. */
+  function addFoodToMealDraft(food: CustomFood) {
+    setMealDraft((current) => ({
+      ...current,
+      foods: [...current.foods, { ...food, id: makeId("food") }],
+    }));
+    setSheet("meal");
+  }
+
+  function addManualFoodToMealDraft() {
+    if (!foodDraft) {
+      return;
+    }
+
+    const name = foodDraft.name.trim();
+    if (!name) {
+      setFoodError("Give the food a name.");
+      return;
+    }
+
+    setMealDraft((current) => ({
+      ...current,
+      foods: [
+        ...current.foods,
+        {
+          id: makeId("food"),
+          name,
+          amount: foodDraft.amount.trim(),
+          calories: clamp(foodDraft.calories),
+          protein: clamp(foodDraft.protein),
+          fat: clamp(foodDraft.fat),
+          carbs: clamp(foodDraft.carbs),
+        },
+      ],
+    }));
+    setFoodDraft(null);
+    setFoodError("");
+    setSheet("meal");
+  }
+
+  function removeFoodFromMealDraft(id: string) {
+    setMealDraft((current) => ({
+      ...current,
+      foods: current.foods.filter((food) => food.id !== id),
+    }));
+  }
+
+  function openFoodPicker() {
+    setFoodDraft(newFoodDraft());
+    setFoodError("");
+    setSheet("foodpicker");
+  }
+
+  function openSettings() {
+    setSettingsDraft({
+      calories: profile.calories,
+      protein: profile.protein,
+      fat: profile.fat,
+      carbs: profile.carbs,
+      stepMin: profile.stepMin,
+      stepMax: profile.stepMax,
+      startDate: profile.startDate,
+      startWeight: String(profile.startWeight),
+      goalWeight: String(profile.goalWeight),
+      goalDate: profile.goalDate,
+    });
+    setSettingsError("");
+    setFullScreen("settings");
+  }
+
+  function updateSettingsDraft(next: Partial<SettingsDraft>) {
+    setSettingsDraft((current) => (current ? { ...current, ...next } : current));
+    setSettingsError("");
+  }
+
+  function saveSettings() {
+    if (!settingsDraft) {
+      return;
+    }
+
+    const startWeight = Number(settingsDraft.startWeight);
+    const goalWeight = Number(settingsDraft.goalWeight);
+
+    if (![startWeight, goalWeight].every((value) => Number.isFinite(value) && value > 0)) {
+      setSettingsError("Enter both weights in pounds, for example 233.");
+      return;
+    }
+
+    if (settingsDraft.goalDate < settingsDraft.startDate) {
+      setSettingsError("Your goal date cannot be before your start date.");
+      return;
+    }
+
+    if (settingsDraft.stepMin > settingsDraft.stepMax) {
+      setSettingsError("Your lowest step target cannot be above the highest.");
+      return;
+    }
+
+    const { calories, protein, fat, carbs, stepMin, stepMax } = settingsDraft;
+
+    updateProfile({
+      calories,
+      protein,
+      fat,
+      carbs,
+      stepMin,
+      stepMax,
+      startDate: settingsDraft.startDate,
+      startWeight,
+      goalWeight,
+      goalDate: settingsDraft.goalDate,
+    });
+
+    // Carry the new targets onto today and everything ahead of it. Past days keep
+    // what they were logged against, so history stays honest.
+    setDays((current) =>
+      Object.fromEntries(
+        Object.entries(current).map(([date, day]) =>
+          date < today
+            ? [date, day]
+            : [date, { ...day, calories, protein, fat, carbs, stepMin, stepMax }],
+        ),
+      ),
+    );
+
+    setSettingsError("");
+    setFullScreen(null);
   }
 
   function getAdjustedMeals(day = currentDay): AdjustedMeal[] {
@@ -1182,6 +1575,9 @@ export default function DietApp() {
         const fallback = next[target] ?? createDay(target, profile);
         const copied = cloneDay(source);
         copied.date = target;
+        // A weigh-in is a measurement of the destination day, never something the
+        // source day can supply. Copying it would overwrite real readings.
+        copied.weighIn = fallback.weighIn;
 
         if (!copyOptions.activity) {
           copied.stepMin = fallback.stepMin;
@@ -1228,7 +1624,7 @@ export default function DietApp() {
     );
   }
 
-  function addLibraryMeal(name: string, macros: Totals) {
+  function addLibraryMeal(name: string, macros: Totals, amount = "1 serving") {
     const nextMeal: Meal = {
       id: makeId("meal"),
       name: `Meal ${currentDay.meals.length + 1}`,
@@ -1238,12 +1634,14 @@ export default function DietApp() {
       fat: macros.fat,
       carbs: macros.carbs,
       locked: false,
-      foods: [{ id: makeId("food"), name, amount: "1 serving" }],
+      foods: [{ id: makeId("food"), name, amount, ...macros }],
     };
 
     updateDay(selectedDate, (day) => ({
       ...day,
-      meals: [...day.meals, nextMeal],
+      // Meals read in time order, so renumber or the new one lands as "Meal 5"
+      // sitting between Meal 3 and Meal 4.
+      meals: renumberMeals([...day.meals, nextMeal]),
     }));
     setActiveTab("schedule");
   }
@@ -1271,6 +1669,88 @@ export default function DietApp() {
     void loadCloudKey(nextKey, readCachedState(nextKey), today);
   }
 
+  /* ---- coach sharing -----------------------------------------------------
+     Your sync key is a read/write key to everything here, so it is never sent
+     to a coach. Instead you accept their invite code, the server records the
+     link, and you can revoke it at any time without affecting your data. */
+
+  async function loadCoachShares(key: string) {
+    if (!USER_KEY_RE.test(key)) {
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/coach/shares", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userKey: key }),
+      });
+
+      if (!response.ok) {
+        return;
+      }
+
+      const payload = (await response.json()) as { shares?: CoachShare[] };
+      setCoachShares(payload.shares ?? []);
+    } catch {
+      /* sharing is optional; stay quiet if the endpoint is unavailable */
+    }
+  }
+
+  async function acceptCoachInvite() {
+    const code = coachCode.trim().toUpperCase().replace(/[\s-]/g, "");
+
+    if (code.length !== 8) {
+      setCoachStatus("Enter the 8-character code from your coach.");
+      return;
+    }
+
+    setCoachStatus("Linking…");
+
+    try {
+      const response = await fetch("/api/coach/accept", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, userKey: syncKey }),
+      });
+      const payload = (await response.json()) as { error?: string };
+
+      if (!response.ok) {
+        setCoachStatus(payload.error ?? "That code did not work.");
+        return;
+      }
+
+      setCoachCode("");
+      setCoachStatus("Linked. Your coach can now see your logs.");
+      await loadCoachShares(syncKey);
+    } catch {
+      setCoachStatus("Could not reach the server.");
+    }
+  }
+
+  async function revokeCoachShare(id: string) {
+    setCoachStatus("Revoking…");
+
+    try {
+      const response = await fetch(`/api/coach/links/${encodeURIComponent(id)}/revoke`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userKey: syncKey }),
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json()) as { error?: string };
+        setCoachStatus(payload.error ?? "Could not revoke that share.");
+        return;
+      }
+
+      setCoachStatus("Access revoked.");
+      await loadCoachShares(syncKey);
+    } catch {
+      setCoachStatus("Could not reach the server.");
+    }
+  }
+
   function renderBody() {
     if (fullScreen === "workout") {
       return renderWorkoutScreen();
@@ -1286,6 +1766,14 @@ export default function DietApp() {
 
     if (fullScreen === "shopping") {
       return renderShoppingScreen();
+    }
+
+    if (fullScreen === "settings") {
+      return renderSettingsScreen();
+    }
+
+    if (fullScreen === "foods") {
+      return renderCustomFoodsScreen();
     }
 
     return (
@@ -1333,6 +1821,7 @@ export default function DietApp() {
 
   function renderSchedule() {
     const inputDay = isStartDayTemplate(currentDay, profile);
+    const mealTotalNoticeDismissed = dismissedMealTotals.includes(selectedDate);
 
     return (
       <>
@@ -1372,13 +1861,17 @@ export default function DietApp() {
           </div>
         )}
 
-        {calorieDelta !== 0 && totals.calories > 0 && !inputDay && (
+        {calorieDelta !== 0 && totals.calories > 0 && !inputDay && !mealTotalNoticeDismissed && (
           <div className="notice">
             <Info size={24} color="#2c95b8" />
             <p>
               Your day target is {currentDay.calories} cal, but your meals total {totals.calories}.
             </p>
-            <button className="icon-button flat" onClick={() => null} title="Dismiss">
+            <button
+              className="icon-button flat"
+              onClick={() => setDismissedMealTotals((current) => [...current, selectedDate])}
+              title="Dismiss"
+            >
               <X size={22} />
             </button>
           </div>
@@ -1547,6 +2040,7 @@ export default function DietApp() {
         style={{ textAlign: "left" }}
         onClick={() => {
           setWeighDraft(currentDay.weighIn.weight?.toString() ?? "");
+          setWeighError("");
           setSheet("weighin");
         }}
       >
@@ -1563,7 +2057,12 @@ export default function DietApp() {
   }
 
   function renderMealCard(meal: Meal) {
-    const under = meal.calories < 420 || meal.protein < 25;
+    // Judge the meal against its share of the day's targets, not a fixed number:
+    // on a 1200 cal plan every meal would otherwise read "Under targets" forever.
+    const mealCount = Math.max(1, currentDay.meals.length);
+    const calorieShare = (currentDay.calories / mealCount) * MEAL_TARGET_TOLERANCE;
+    const proteinShare = (currentDay.protein / mealCount) * MEAL_TARGET_TOLERANCE;
+    const under = meal.calories < calorieShare || meal.protein < proteinShare;
     const foodCount = meal.foods.length;
     const targetStatus = meal.targetStatus ?? (foodCount > 0 ? (under ? "under" : "met") : null);
     const foodStatus = targetStatus ? `${foodCountText(foodCount)} - ${targetStatus === "under" ? "Under targets" : "Targets met"}` : null;
@@ -1767,48 +2266,79 @@ export default function DietApp() {
   }
 
   function renderExplore() {
-    const foods = [
-      { name: "Grilled chicken bowl", macros: { calories: 520, protein: 48, fat: 14, carbs: 48 } },
-      { name: "Greek yogurt and berries", macros: { calories: 240, protein: 24, fat: 4, carbs: 32 } },
-      { name: "Salmon rice plate", macros: { calories: 610, protein: 42, fat: 24, carbs: 54 } },
-      { name: "Protein shake", macros: { calories: 180, protein: 30, fat: 3, carbs: 8 } },
+    const starters = [
+      { name: "Grilled chicken bowl", amount: "1 serving", macros: { calories: 520, protein: 48, fat: 14, carbs: 48 } },
+      { name: "Greek yogurt and berries", amount: "1 serving", macros: { calories: 240, protein: 24, fat: 4, carbs: 32 } },
+      { name: "Salmon rice plate", amount: "1 serving", macros: { calories: 610, protein: 42, fat: 24, carbs: 54 } },
+      { name: "Protein shake", amount: "1 serving", macros: { calories: 180, protein: 30, fat: 3, carbs: 8 } },
     ];
+    const saved = profile.foods.map((food) => ({
+      name: food.name,
+      amount: food.amount || "1 serving",
+      macros: { calories: food.calories, protein: food.protein, fat: food.fat, carbs: food.carbs },
+    }));
 
     return (
       <>
         <h1 className="more-title">Explore</h1>
-        <section className="schedule-list">
-          {foods.map((food) => (
-            <button
-              className="card"
-              key={food.name}
-              onClick={() => addLibraryMeal(food.name, food.macros)}
-              style={{ padding: 16, textAlign: "left" }}
-            >
-              <div className="split-row" style={{ justifyContent: "space-between" }}>
-                <strong>{food.name}</strong>
-                <ChevronRight />
-              </div>
-              <div className="meal-macros" style={{ margin: "14px -16px -16px" }}>
-                <span>{food.macros.calories} cal</span>
-                <span>{food.macros.protein} P</span>
-                <span>{food.macros.fat} F</span>
-                <span>{food.macros.carbs} C</span>
-              </div>
-            </button>
-          ))}
-        </section>
+
+        <div className="split-row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h2 className="section-title" style={{ margin: 0 }}>
+            Your foods
+          </h2>
+          <button className="icon-button flat" onClick={openCustomFoods}>
+            Manage
+          </button>
+        </div>
+        {saved.length === 0 ? (
+          <p className="muted">Foods you save show up here, ready to add to a day.</p>
+        ) : (
+          <section className="schedule-list">{saved.map(renderExploreFoodCard)}</section>
+        )}
+
+        <h2 className="section-title">Starters</h2>
+        <section className="schedule-list">{starters.map(renderExploreFoodCard)}</section>
       </>
+    );
+  }
+
+  function renderExploreFoodCard(food: { name: string; amount: string; macros: Totals }) {
+    return (
+      <button
+        className="card"
+        key={food.name}
+        onClick={() => addLibraryMeal(food.name, food.macros, food.amount)}
+        style={{ padding: 16, textAlign: "left" }}
+      >
+        <div className="split-row" style={{ justifyContent: "space-between" }}>
+          <strong>{food.name}</strong>
+          <ChevronRight />
+        </div>
+        <div className="meal-macros" style={{ margin: "14px -16px -16px" }}>
+          <span>{food.macros.calories} cal</span>
+          <span>{food.macros.protein} P</span>
+          <span>{food.macros.fat} F</span>
+          <span>{food.macros.carbs} C</span>
+        </div>
+      </button>
     );
   }
 
   function renderMore() {
     const rows: Array<[LucideIcon, string, () => void, string?]> = [
-      [Box, "Custom Foods", () => setActiveTab("explore")],
+      [Box, "Custom Foods", openCustomFoods],
       [ClipboardList, "Shopping List", () => { setShoppingView("home"); setFullScreen("shopping"); }],
-      [Scale, "Weigh-ins", () => setSheet("weighin")],
+      [
+        Scale,
+        "Weigh-ins",
+        () => {
+          setWeighDraft(currentDay.weighIn.weight?.toString() ?? "");
+          setWeighError("");
+          setSheet("weighin");
+        },
+      ],
       [Share2, "Share Progress", () => null],
-      [Settings, "Settings", () => null],
+      [Settings, "Settings", openSettings],
       [CircleHelp, "Help", () => null],
       [RefreshCw, "Cloud Sync", () => setSheet("cloud"), syncStatus],
       [Ban, "End Current Diet", () => null],
@@ -1830,6 +2360,281 @@ export default function DietApp() {
           ))}
         </div>
       </>
+    );
+  }
+
+  function renderCustomFoodsScreen() {
+    if (foodDraft) {
+      return renderCustomFoodEditor(foodDraft);
+    }
+
+    return (
+      <main className="full-screen phone-frame">
+        <div className="nav-row">
+          <button className="icon-button flat" onClick={() => setFullScreen(null)} title="Back">
+            <ArrowLeft size={32} />
+          </button>
+          <h1>Custom Foods</h1>
+          <button className="primary-button" onClick={() => setFoodDraft(newFoodDraft())}>
+            Add
+          </button>
+        </div>
+
+        {profile.foods.length === 0 ? (
+          <div className="notice" style={{ flexDirection: "column", alignItems: "flex-start", gap: 12 }}>
+            <p className="muted" style={{ margin: 0 }}>
+              Save the foods you eat often with their macros. Once saved, you can drop one into any
+              meal and its calories and macros come with it.
+            </p>
+          </div>
+        ) : (
+          <div className="schedule-list">
+            {profile.foods.map((food) => (
+              <article className="card" key={food.id}>
+                <button
+                  className="meal-card-head"
+                  style={{ background: "#ffffff", border: 0, textAlign: "left", width: "100%" }}
+                  onClick={() => editCustomFood(food)}
+                >
+                  <div className="meal-title">
+                    <Box size={24} />
+                    <span className="meal-name">{food.name}</span>
+                  </div>
+                  {food.amount && <span className="time-pill">{food.amount}</span>}
+                </button>
+                <div className="meal-macros">
+                  <div className="macro-value">
+                    <MacroBadge kind="cal">
+                      <Flame size={16} />
+                    </MacroBadge>
+                    <strong>{food.calories}</strong>
+                  </div>
+                  <div className="macro-value">
+                    <MacroBadge kind="protein">P</MacroBadge>
+                    <strong>{food.protein}</strong>
+                  </div>
+                  <div className="macro-value">
+                    <MacroBadge kind="fat">F</MacroBadge>
+                    <strong>{food.fat}</strong>
+                  </div>
+                  <div className="macro-value">
+                    <MacroBadge kind="carbs">C</MacroBadge>
+                    <strong>{food.carbs}</strong>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </main>
+    );
+  }
+
+  function renderCustomFoodEditor(draft: CustomFoodDraft) {
+    return (
+      <main className="full-screen phone-frame">
+        <div className="nav-row">
+          <button className="icon-button flat" onClick={() => setFoodDraft(null)} title="Back">
+            <ArrowLeft size={32} />
+          </button>
+          <h1>{draft.id ? "Edit food" : "New food"}</h1>
+          <button className="primary-button" onClick={saveCustomFood}>
+            Save
+          </button>
+        </div>
+
+        <div className="form-stack">
+          <div className="form-row">
+            <label htmlFor="custom-food-name">Name</label>
+            <input
+              id="custom-food-name"
+              className="text-input"
+              placeholder="Chicken breast"
+              value={draft.name}
+              onChange={(event) => updateFoodDraft({ name: event.target.value })}
+            />
+          </div>
+          <div className="form-row">
+            <label htmlFor="custom-food-amount">Amount</label>
+            <input
+              id="custom-food-amount"
+              className="text-input"
+              placeholder="250 G"
+              value={draft.amount}
+              onChange={(event) => updateFoodDraft({ amount: event.target.value })}
+            />
+          </div>
+
+          <h2 className="section-title">Nutrition for that amount</h2>
+          <div className="number-grid">
+            <NutrientInput
+              kind="cal"
+              icon={<Flame size={16} />}
+              label="Calories (kcal)"
+              value={draft.calories}
+              step={25}
+              onChange={(calories) => updateFoodDraft({ calories })}
+            />
+            <NutrientInput
+              kind="protein"
+              icon="P"
+              label="Protein (g)"
+              value={draft.protein}
+              onChange={(protein) => updateFoodDraft({ protein })}
+            />
+            <NutrientInput
+              kind="fat"
+              icon="F"
+              label="Fat (g)"
+              value={draft.fat}
+              onChange={(fat) => updateFoodDraft({ fat })}
+            />
+            <NutrientInput
+              kind="carbs"
+              icon="C"
+              label="Carbs (g)"
+              value={draft.carbs}
+              onChange={(carbs) => updateFoodDraft({ carbs })}
+            />
+          </div>
+
+          {foodError && <p className="form-error">{foodError}</p>}
+
+          {draft.id && (
+            <button className="danger-button" style={{ width: "100%", marginTop: 8 }} onClick={() => deleteCustomFood(draft.id as string)}>
+              Delete food
+            </button>
+          )}
+        </div>
+      </main>
+    );
+  }
+
+  function renderSettingsScreen() {
+    if (!settingsDraft) {
+      return null;
+    }
+
+    const draft = settingsDraft;
+    const projectedChange = Number(draft.goalWeight) - Number(draft.startWeight);
+
+    return (
+      <main className="full-screen phone-frame">
+        <div className="nav-row">
+          <button className="icon-button flat" onClick={() => setFullScreen(null)} title="Back">
+            <ArrowLeft size={32} />
+          </button>
+          <h1>
+            <Settings size={22} /> Settings
+          </h1>
+          <button className="primary-button" onClick={saveSettings}>
+            Save
+          </button>
+        </div>
+
+        <div className="form-stack">
+          <h2 className="section-title">Daily targets</h2>
+          <p className="muted">Applies to today and every day ahead. Past days keep what you logged.</p>
+          <div className="number-grid">
+            <NutrientInput
+              kind="cal"
+              icon={<Flame size={16} />}
+              label="Calories (kcal)"
+              value={draft.calories}
+              step={25}
+              onChange={(calories) => updateSettingsDraft({ calories })}
+            />
+            <NutrientInput
+              kind="protein"
+              icon="P"
+              label="Protein (g)"
+              value={draft.protein}
+              onChange={(protein) => updateSettingsDraft({ protein })}
+            />
+            <NutrientInput
+              kind="fat"
+              icon="F"
+              label="Fat (g)"
+              value={draft.fat}
+              onChange={(fat) => updateSettingsDraft({ fat })}
+            />
+            <NutrientInput
+              kind="carbs"
+              icon="C"
+              label="Carbs (g)"
+              value={draft.carbs}
+              onChange={(carbs) => updateSettingsDraft({ carbs })}
+            />
+          </div>
+
+          <h2 className="section-title">Step count target</h2>
+          <div className="step-row header-row">
+            <strong className="header-row" style={{ gap: 8 }}>
+              <Footprints /> Steps per day
+            </strong>
+            <span className="step-range">
+              <input
+                className="mono"
+                inputMode="numeric"
+                aria-label="Lowest daily step target"
+                value={draft.stepMin}
+                onChange={(event) => updateSettingsDraft({ stepMin: clamp(Number(event.target.value)) })}
+              />
+              <span className="muted">-</span>
+              <input
+                className="mono"
+                inputMode="numeric"
+                aria-label="Highest daily step target"
+                value={draft.stepMax}
+                onChange={(event) => updateSettingsDraft({ stepMax: clamp(Number(event.target.value)) })}
+              />
+            </span>
+          </div>
+
+          <h2 className="section-title">Your plan</h2>
+          <FormDate
+            label="Start date"
+            value={draft.startDate}
+            onChange={(startDate) => updateSettingsDraft({ startDate })}
+          />
+          <div className="form-row">
+            <label htmlFor="settings-start-weight">Start weight</label>
+            <input
+              id="settings-start-weight"
+              className="number-input mono"
+              inputMode="decimal"
+              placeholder="lbs"
+              value={draft.startWeight}
+              onChange={(event) => updateSettingsDraft({ startWeight: event.target.value })}
+            />
+          </div>
+          <div className="form-row">
+            <label htmlFor="settings-goal-weight">Goal weight</label>
+            <input
+              id="settings-goal-weight"
+              className="number-input mono"
+              inputMode="decimal"
+              placeholder="lbs"
+              value={draft.goalWeight}
+              onChange={(event) => updateSettingsDraft({ goalWeight: event.target.value })}
+            />
+          </div>
+          <FormDate
+            label="Goal date"
+            value={draft.goalDate}
+            onChange={(goalDate) => updateSettingsDraft({ goalDate })}
+          />
+
+          {Number.isFinite(projectedChange) && projectedChange !== 0 && (
+            <p className="muted">
+              That is {Math.abs(projectedChange).toFixed(1)} lbs to {projectedChange < 0 ? "lose" : "gain"} by{" "}
+              {formatGoalDate(draft.goalDate)}.
+            </p>
+          )}
+
+          {settingsError && <p className="form-error">{settingsError}</p>}
+        </div>
+      </main>
     );
   }
 
@@ -1999,11 +2804,27 @@ export default function DietApp() {
             <strong className="header-row" style={{ gap: 8 }}>
               <Footprints /> Step count target
             </strong>
-            <input
-              className="text-input mono"
-              value={`${Math.round(currentDay.stepMin / 1000)} - ${Math.round(currentDay.stepMax / 1000)}k steps`}
-              onChange={() => null}
-            />
+            <span className="step-range">
+              <input
+                className="mono"
+                inputMode="numeric"
+                aria-label="Minimum daily steps"
+                value={currentDay.stepMin}
+                onChange={(event) =>
+                  updateDay(selectedDate, (day) => ({ ...day, stepMin: clamp(Number(event.target.value)) }))
+                }
+              />
+              <span className="muted">-</span>
+              <input
+                className="mono"
+                inputMode="numeric"
+                aria-label="Maximum daily steps"
+                value={currentDay.stepMax}
+                onChange={(event) =>
+                  updateDay(selectedDate, (day) => ({ ...day, stepMax: clamp(Number(event.target.value)) }))
+                }
+              />
+            </span>
           </div>
           <div className="step-row header-row">
             <strong className="header-row" style={{ gap: 8 }}>
@@ -2033,24 +2854,51 @@ export default function DietApp() {
   }
 
   function getShoppingFoods(startDate: string, endDate: string) {
-    const seen: Record<string, string> = {};
     const order: string[] = [];
+    const tallies: Record<string, ShoppingTally[]> = {};
+    const unparsed: Record<string, string> = {};
+
     let date = startDate;
     while (date <= endDate) {
       const day = days[date];
       if (day) {
         for (const meal of day.meals) {
           for (const food of meal.foods) {
-            if (!(food.name in seen)) {
-              seen[food.name] = food.amount;
+            if (!(food.name in tallies)) {
               order.push(food.name);
+              tallies[food.name] = [];
+            }
+
+            const parsed = parseShoppingAmount(food.amount);
+            if (!parsed) {
+              if (!(food.name in unparsed)) {
+                unparsed[food.name] = food.amount;
+              }
+              continue;
+            }
+
+            const bucket = tallies[food.name];
+            const match = bucket.find(
+              (entry) => entry.cooked === parsed.cooked && entry.unit === parsed.unit,
+            );
+            if (match) {
+              match.qty += parsed.qty;
+            } else {
+              bucket.push(parsed);
             }
           }
         }
       }
       date = addDays(date, 1);
     }
-    return order.map((name) => ({ name, amount: seen[name] }));
+
+    return order.map((name) => {
+      const bucket = tallies[name] ?? [];
+      if (bucket.length === 0) {
+        return { name, amount: unparsed[name] ?? "" };
+      }
+      return { name, amount: bucket.map(formatShoppingTally).join(" + ") };
+    });
   }
 
   function parseShoppingFoodName(name: string): { brand: string; product: string } {
@@ -2061,7 +2909,7 @@ export default function DietApp() {
     return { brand: name, product: name };
   }
 
-  function formatShoppingAmount(amount: string, unit: ShoppingUnit, state: ShoppingState): { display: string; isRaw: boolean } {
+  function formatShoppingAmount(amount: string, unit: ShoppingUnit): { display: string; isRaw: boolean } {
     const cookedPrefix = "COOKED ";
     const isCooked = amount.startsWith(cookedPrefix);
     const base = isCooked ? amount.slice(cookedPrefix.length) : amount;
@@ -2123,7 +2971,7 @@ export default function DietApp() {
           </div>
           <div className="notice" style={{ flexDirection: "column", alignItems: "flex-start", gap: 12 }}>
             <p className="muted" style={{ margin: 0 }}>
-              For any meals you have configured, the Shopping List will tell you how much of each food you'll need for the week so that you can make all of your meals to their specifications!
+              For any meals you have configured, the Shopping List will tell you how much of each food you&apos;ll need for the week so that you can make all of your meals to their specifications!
             </p>
             <p className="muted" style={{ margin: 0 }}>
               Choose from one of the default shopping list options or create your own custom list.
@@ -2215,7 +3063,7 @@ export default function DietApp() {
                 {foods.map((food) => {
                   const checked = shoppingChecked.includes(food.name);
                   const { brand, product } = parseShoppingFoodName(food.name);
-                  const { display: amountDisplay, isRaw } = formatShoppingAmount(food.amount ?? "", shoppingUnit, shoppingState);
+                  const { display: amountDisplay, isRaw } = formatShoppingAmount(food.amount ?? "", shoppingUnit);
                   const showRawLabel = isRaw && shoppingState === "cooked";
                   const showCookedLabel = !isRaw && shoppingState === "raw";
                   return (
@@ -2243,7 +3091,7 @@ export default function DietApp() {
                   const checkKey = `custom:${food.id}`;
                   const checked = shoppingChecked.includes(checkKey);
                   const { brand, product } = parseShoppingFoodName(food.name);
-                  const { display: amountDisplay } = formatShoppingAmount(food.amount ?? "", shoppingUnit, shoppingState);
+                  const { display: amountDisplay } = formatShoppingAmount(food.amount ?? "", shoppingUnit);
                   return (
                     <div key={checkKey} className="shopping-food-row">
                       <button className="shopping-toggle" onClick={() => toggleChecked(checkKey)}>
@@ -2325,6 +3173,7 @@ export default function DietApp() {
           {sheet === "weighin" && renderWeighInSheet()}
           {sheet === "calendar" && renderCalendarSheet()}
           {sheet === "adjust" && renderAdjustMealsSheet()}
+          {sheet === "foodpicker" && renderFoodPickerSheet()}
         </section>
       </>
     );
@@ -2596,6 +3445,166 @@ export default function DietApp() {
     );
   }
 
+  function renderFoodPickerSheet() {
+    const draft = foodDraft ?? newFoodDraft();
+
+    return (
+      <>
+        <div className="sheet-title-row">
+          <button className="icon-button flat" onClick={() => setSheet("meal")}>
+            Back
+          </button>
+          <h2>Add food</h2>
+          <button className="primary-button" onClick={addManualFoodToMealDraft}>
+            Add
+          </button>
+        </div>
+
+        {profile.foods.length > 0 && (
+          <>
+            <h2 className="section-title">Your saved foods</h2>
+            <div className="schedule-list">
+              {profile.foods.map((food) => (
+                <button
+                  className="card"
+                  key={food.id}
+                  onClick={() => addFoodToMealDraft(food)}
+                  style={{ padding: 16, textAlign: "left" }}
+                >
+                  <div className="split-row" style={{ justifyContent: "space-between" }}>
+                    <strong>{food.name}</strong>
+                    {food.amount && <span className="time-pill">{food.amount}</span>}
+                  </div>
+                  <div className="meal-macros" style={{ margin: "14px -16px -16px" }}>
+                    <span>{food.calories} cal</span>
+                    <span>{food.protein} P</span>
+                    <span>{food.fat} F</span>
+                    <span>{food.carbs} C</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        <h2 className="section-title">{profile.foods.length > 0 ? "Or enter one" : "Enter a food"}</h2>
+        <div className="form-stack">
+          <input
+            className="text-input"
+            placeholder="Food name"
+            aria-label="Food name"
+            value={draft.name}
+            onChange={(event) => updateFoodDraft({ name: event.target.value })}
+          />
+          <input
+            className="text-input"
+            placeholder="Amount, for example 250 G"
+            aria-label="Food amount"
+            value={draft.amount}
+            onChange={(event) => updateFoodDraft({ amount: event.target.value })}
+          />
+          <div className="number-grid">
+            <NutrientInput
+              kind="cal"
+              icon={<Flame size={16} />}
+              label="Calories (kcal)"
+              value={draft.calories}
+              step={25}
+              onChange={(calories) => updateFoodDraft({ calories })}
+            />
+            <NutrientInput
+              kind="protein"
+              icon="P"
+              label="Protein (g)"
+              value={draft.protein}
+              onChange={(protein) => updateFoodDraft({ protein })}
+            />
+            <NutrientInput
+              kind="fat"
+              icon="F"
+              label="Fat (g)"
+              value={draft.fat}
+              onChange={(fat) => updateFoodDraft({ fat })}
+            />
+            <NutrientInput
+              kind="carbs"
+              icon="C"
+              label="Carbs (g)"
+              value={draft.carbs}
+              onChange={(carbs) => updateFoodDraft({ carbs })}
+            />
+          </div>
+          {foodError && <p className="form-error">{foodError}</p>}
+        </div>
+      </>
+    );
+  }
+
+  function renderMealDraftFoods() {
+    const totals = sumFoods(mealDraft.foods);
+
+    return (
+      <>
+        <h2 className="section-title">Foods</h2>
+        <div className="schedule-list">
+          {mealDraft.foods.map((food) => (
+            <article className="card" key={food.id}>
+              <div className="meal-card-head">
+                <div className="meal-title">
+                  <span className="meal-name">{food.name}</span>
+                  {food.amount && <small className="muted">{food.amount}</small>}
+                </div>
+                <button
+                  className="icon-button flat"
+                  onClick={() => removeFoodFromMealDraft(food.id)}
+                  title={`Remove ${food.name}`}
+                >
+                  <X size={22} />
+                </button>
+              </div>
+              <div className="meal-macros">
+                <div className="macro-value">
+                  <MacroBadge kind="cal">
+                    <Flame size={16} />
+                  </MacroBadge>
+                  <strong>{food.calories}</strong>
+                </div>
+                <div className="macro-value">
+                  <MacroBadge kind="protein">P</MacroBadge>
+                  <strong>{food.protein}</strong>
+                </div>
+                <div className="macro-value">
+                  <MacroBadge kind="fat">F</MacroBadge>
+                  <strong>{food.fat}</strong>
+                </div>
+                <div className="macro-value">
+                  <MacroBadge kind="carbs">C</MacroBadge>
+                  <strong>{food.carbs}</strong>
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+
+        <div className="step-row header-row" style={{ marginTop: 12 }}>
+          <strong>Meal total</strong>
+          <span className="header-row" style={{ gap: 10 }}>
+            <MiniBadge kind="cal">
+              <Flame size={16} />
+            </MiniBadge>
+            <strong className="mono">{totals.calories}</strong>
+            <MiniBadge kind="protein">P</MiniBadge>
+            <strong className="mono">{totals.protein}</strong>
+            <MiniBadge kind="fat">F</MiniBadge>
+            <strong className="mono">{totals.fat}</strong>
+            <MiniBadge kind="carbs">C</MiniBadge>
+            <strong className="mono">{totals.carbs}</strong>
+          </span>
+        </div>
+      </>
+    );
+  }
+
   function renderMealSheet() {
     return (
       <>
@@ -2615,51 +3624,49 @@ export default function DietApp() {
           onChange={(time) => setMealDraft((current) => ({ ...current, time }))}
         />
 
-        <div className="number-grid" style={{ marginTop: 12 }}>
-          <NutrientInput
-            kind="cal"
-            icon={<Flame size={24} />}
-            label="Calories (kcal)"
-            value={mealDraft.calories}
-            onChange={(calories) => setMealDraft((current) => ({ ...current, calories }))}
-            step={25}
-          />
-          <NutrientInput
-            kind="protein"
-            icon="P"
-            label="Protein (g)"
-            value={mealDraft.protein}
-            onChange={(protein) => setMealDraft((current) => ({ ...current, protein }))}
-          />
-          <NutrientInput
-            kind="fat"
-            icon="F"
-            label="Fat (g)"
-            value={mealDraft.fat}
-            onChange={(fat) => setMealDraft((current) => ({ ...current, fat }))}
-          />
-          <NutrientInput
-            kind="carbs"
-            icon="C"
-            label="Carbs (g)"
-            value={mealDraft.carbs}
-            onChange={(carbs) => setMealDraft((current) => ({ ...current, carbs }))}
-          />
-        </div>
+        {mealDraft.foods.length === 0 ? (
+          <>
+            <h2 className="section-title">Planned targets</h2>
+            <div className="number-grid">
+              <NutrientInput
+                kind="cal"
+                icon={<Flame size={24} />}
+                label="Calories (kcal)"
+                value={mealDraft.calories}
+                onChange={(calories) => setMealDraft((current) => ({ ...current, calories }))}
+                step={25}
+              />
+              <NutrientInput
+                kind="protein"
+                icon="P"
+                label="Protein (g)"
+                value={mealDraft.protein}
+                onChange={(protein) => setMealDraft((current) => ({ ...current, protein }))}
+              />
+              <NutrientInput
+                kind="fat"
+                icon="F"
+                label="Fat (g)"
+                value={mealDraft.fat}
+                onChange={(fat) => setMealDraft((current) => ({ ...current, fat }))}
+              />
+              <NutrientInput
+                kind="carbs"
+                icon="C"
+                label="Carbs (g)"
+                value={mealDraft.carbs}
+                onChange={(carbs) => setMealDraft((current) => ({ ...current, carbs }))}
+              />
+            </div>
+          </>
+        ) : (
+          renderMealDraftFoods()
+        )}
 
         <div className="form-stack" style={{ marginTop: 18 }}>
-          <input
-            className="text-input"
-            placeholder="Food name"
-            value={mealDraft.foodName}
-            onChange={(event) => setMealDraft((current) => ({ ...current, foodName: event.target.value }))}
-          />
-          <input
-            className="text-input"
-            placeholder="Amount"
-            value={mealDraft.foodAmount}
-            onChange={(event) => setMealDraft((current) => ({ ...current, foodAmount: event.target.value }))}
-          />
+          <button className="ghost-button" style={{ width: "100%" }} onClick={openFoodPicker}>
+            <Plus size={22} /> Add food
+          </button>
         </div>
 
         <div className="split-row" style={{ gap: 12, marginTop: 24 }}>
@@ -2743,8 +3750,7 @@ export default function DietApp() {
   function renderAdvancedSheet() {
     const options: Array<[keyof CopyOptions, string, string?]> = [
       ["activity", "Copy activity level"],
-      ["firstLast", "Copy first and last meal times"],
-      ["mealCount", "Copy meal count"],
+      ["mealCount", "Copy meal names"],
       ["meals", "Copy meals", "Includes meal times and lock state."],
       ["mealTargets", "Copy meal macro targets"],
       ["mealFoods", "Copy meal foods"],
@@ -2830,6 +3836,61 @@ export default function DietApp() {
             Restore backup
           </button>
         </div>
+
+        <h3 style={{ marginTop: 28, marginBottom: 4 }}>Your coach</h3>
+        <p className="muted" style={{ marginTop: 0 }}>
+          Enter the code your coach gave you and they can see your logged meals, macros and
+          weigh-ins. They never get your sync key, and you can stop sharing at any time.
+        </p>
+
+        {coachShares.filter((share) => share.status === "active").length > 0 ? (
+          <div className="form-stack" style={{ marginTop: 12 }}>
+            {coachShares
+              .filter((share) => share.status === "active")
+              .map((share) => (
+                <div
+                  key={share.id}
+                  className="status-card"
+                  style={{ padding: 14, display: "flex", alignItems: "center", gap: 12 }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <strong>Sharing with your coach</strong>
+                    <p className="muted" style={{ marginBottom: 0 }}>
+                      Read-only
+                      {share.acceptedAt
+                        ? ` · since ${new Date(share.acceptedAt).toLocaleDateString()}`
+                        : ""}
+                    </p>
+                  </div>
+                  <button className="icon-button flat" onClick={() => revokeCoachShare(share.id)}>
+                    Stop sharing
+                  </button>
+                </div>
+              ))}
+          </div>
+        ) : (
+          <div className="form-stack" style={{ marginTop: 12 }}>
+            <input
+              className="text-input"
+              placeholder="Coach invite code"
+              autoCapitalize="characters"
+              autoCorrect="off"
+              spellCheck={false}
+              maxLength={9}
+              value={coachCode}
+              onChange={(event) => setCoachCode(event.target.value)}
+            />
+            <button className="primary-button" onClick={acceptCoachInvite}>
+              Link my coach
+            </button>
+          </div>
+        )}
+
+        {coachStatus ? (
+          <p className="muted" style={{ marginTop: 10 }}>
+            {coachStatus}
+          </p>
+        ) : null}
       </>
     );
   }
@@ -2853,10 +3914,15 @@ export default function DietApp() {
             className="number-input"
             inputMode="decimal"
             value={weighDraft}
-            onChange={(event) => setWeighDraft(event.target.value)}
+            aria-invalid={weighError ? true : undefined}
+            onChange={(event) => {
+              setWeighDraft(event.target.value);
+              setWeighError("");
+            }}
             placeholder="lbs"
           />
         </div>
+        {weighError && <p className="form-error">{weighError}</p>}
       </>
     );
   }
@@ -2934,8 +4000,7 @@ function newMealDraft(index = 1): MealDraft {
     fat: 0,
     carbs: 0,
     locked: false,
-    foodName: "",
-    foodAmount: "",
+    foods: [],
   };
 }
 
@@ -2974,6 +4039,31 @@ function FormText({
     <div className="form-row">
       <label>{label}</label>
       <input className="text-input mono" value={value} onChange={(event) => onChange(event.target.value)} />
+    </div>
+  );
+}
+
+function FormDate({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const id = `form-date-${label.toLowerCase().replaceAll(" ", "-")}`;
+
+  return (
+    <div className="form-row">
+      <label htmlFor={id}>{label}</label>
+      <input
+        id={id}
+        className="text-input mono"
+        type="date"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
     </div>
   );
 }
