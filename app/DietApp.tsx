@@ -94,6 +94,14 @@ type Profile = {
   goalDate: string;
   /** Rides along with the profile so the library syncs to every device. */
   foods: CustomFood[];
+  meals: CustomMeal[];
+};
+
+/** A combination you eat often, like "Chicken and rice bowl", saved to reuse whole. */
+type CustomMeal = {
+  id: string;
+  name: string;
+  foods: Food[];
 };
 
 type Food = {
@@ -382,6 +390,7 @@ function createDefaultProfile(today: string): Profile {
     goalWeight: 220,
     goalDate: addDays(today, 54),
     foods: [],
+    meals: [],
   };
 }
 
@@ -486,6 +495,15 @@ function normalizeProfile(value: unknown, today: string): Profile {
             protein: clamp(Number(food.protein ?? 0)),
             fat: clamp(Number(food.fat ?? 0)),
             carbs: clamp(Number(food.carbs ?? 0)),
+          }))
+      : [],
+    meals: Array.isArray(source.meals)
+      ? source.meals
+          .filter((meal) => meal && typeof meal.name === "string" && Array.isArray(meal.foods))
+          .map((meal) => ({
+            id: typeof meal.id === "string" ? meal.id : makeId("custom-meal"),
+            name: meal.name,
+            foods: meal.foods.map((food, index) => normalizeMealFood(food, {}, index)),
           }))
       : [],
   };
@@ -893,6 +911,9 @@ export default function DietApp() {
   const [settingsError, setSettingsError] = useState("");
   const [foodDraft, setFoodDraft] = useState<CustomFoodDraft | null>(null);
   const [foodError, setFoodError] = useState("");
+  const [libraryView, setLibraryView] = useState<"foods" | "meals">("foods");
+  const [mealTemplateDraft, setMealTemplateDraft] = useState<CustomMeal | null>(null);
+  const [mealTemplateError, setMealTemplateError] = useState("");
   const [calendarMonth, setCalendarMonth] = useState(BOOT_DATE);
   const [adjustSelectedMealIds, setAdjustSelectedMealIds] = useState<string[]>([]);
   const [adjustReset, setAdjustReset] = useState(false);
@@ -1387,6 +1408,101 @@ export default function DietApp() {
     updateProfile({ foods: profile.foods.filter((entry) => entry.id !== id) });
     setFoodDraft(null);
     setFoodError("");
+  }
+
+  function editMealTemplate(meal: CustomMeal) {
+    setMealTemplateDraft({ ...meal, foods: meal.foods.map((food) => ({ ...food })) });
+    setMealTemplateError("");
+  }
+
+  function updateMealTemplateDraft(next: Partial<CustomMeal>) {
+    setMealTemplateDraft((current) => (current ? { ...current, ...next } : current));
+    setMealTemplateError("");
+  }
+
+  function saveMealTemplate() {
+    if (!mealTemplateDraft) {
+      return;
+    }
+
+    const name = mealTemplateDraft.name.trim();
+    if (!name) {
+      setMealTemplateError("Give this meal a name.");
+      return;
+    }
+
+    if (mealTemplateDraft.foods.length === 0) {
+      setMealTemplateError("Add at least one food to this meal.");
+      return;
+    }
+
+    const template: CustomMeal = { ...mealTemplateDraft, name };
+    const exists = profile.meals.some((entry) => entry.id === template.id);
+
+    updateProfile({
+      meals: exists
+        ? profile.meals.map((entry) => (entry.id === template.id ? template : entry))
+        : [...profile.meals, template],
+    });
+    setMealTemplateDraft(null);
+    setMealTemplateError("");
+  }
+
+  function deleteMealTemplate(id: string) {
+    updateProfile({ meals: profile.meals.filter((entry) => entry.id !== id) });
+    setMealTemplateDraft(null);
+    setMealTemplateError("");
+  }
+
+  /** Captures the meal you are editing as a reusable template. */
+  function saveMealDraftAsTemplate() {
+    if (mealDraft.foods.length === 0) {
+      return;
+    }
+
+    setMealTemplateDraft({
+      id: makeId("custom-meal"),
+      name: /^Meal \d+$/.test(mealDraft.name.trim()) ? "" : mealDraft.name.trim(),
+      foods: mealDraft.foods.map((food) => ({ ...food })),
+    });
+    setMealTemplateError("");
+    setSheet(null);
+    setLibraryView("meals");
+    setFullScreen("foods");
+  }
+
+  /** Drops every food from a saved meal into the meal you are editing. */
+  function addMealTemplateToDraft(template: CustomMeal) {
+    setMealDraft((current) => ({
+      ...current,
+      foods: [
+        ...current.foods,
+        ...template.foods.map((food) => ({ ...food, id: makeId("food") })),
+      ],
+    }));
+    setSheet("meal");
+  }
+
+  /** Adds a saved meal to the selected day as its own meal. */
+  function addMealTemplateToDay(template: CustomMeal) {
+    const nextMeal: Meal = withFoodTotals({
+      id: makeId("meal"),
+      name: template.name,
+      time: "7:45 PM",
+      calories: 0,
+      protein: 0,
+      fat: 0,
+      carbs: 0,
+      locked: false,
+      foods: template.foods.map((food) => ({ ...food, id: makeId("food") })),
+    });
+
+    updateDay(selectedDate, (day) => ({
+      ...day,
+      meals: renumberMeals([...day.meals, nextMeal]),
+    }));
+    setFullScreen(null);
+    setActiveTab("schedule");
   }
 
   /** Adds a saved food to the meal you are editing, macros and all. */
@@ -3141,6 +3257,34 @@ export default function DietApp() {
             Manage
           </button>
         </div>
+
+        {profile.meals.length > 0 && (
+          <section className="schedule-list" style={{ marginBottom: 18 }}>
+            {profile.meals.map((template) => {
+              const totals = sumFoods(template.foods);
+
+              return (
+                <button
+                  className="card"
+                  key={template.id}
+                  onClick={() => addMealTemplateToDay(template)}
+                  style={{ padding: 16, textAlign: "left" }}
+                >
+                  <div className="split-row" style={{ justifyContent: "space-between" }}>
+                    <strong>{template.name}</strong>
+                    <span className="time-pill">{foodCountText(template.foods.length)}</span>
+                  </div>
+                  <div className="meal-macros" style={{ margin: "14px -16px -16px" }}>
+                    <span>{totals.calories} cal</span>
+                    <span>{totals.protein} P</span>
+                    <span>{totals.fat} F</span>
+                    <span>{totals.carbs} C</span>
+                  </div>
+                </button>
+              );
+            })}
+          </section>
+        )}
         {saved.length === 0 ? (
           <p className="muted">Foods you save show up here, ready to add to a day.</p>
         ) : (
@@ -3177,7 +3321,7 @@ export default function DietApp() {
 
   function renderMore() {
     const rows: Array<[LucideIcon, string, () => void, string?]> = [
-      [Box, "Custom Foods", openCustomFoods],
+      [Box, "Foods & Meals", openCustomFoods],
       [ClipboardList, "Shopping List", () => { setShoppingView("home"); setFullScreen("shopping"); }],
       [
         Scale,
@@ -3219,18 +3363,128 @@ export default function DietApp() {
       return renderCustomFoodEditor(foodDraft);
     }
 
+    if (mealTemplateDraft) {
+      return renderMealTemplateEditor(mealTemplateDraft);
+    }
+
+    const showingMeals = libraryView === "meals";
+
     return (
       <main className="full-screen phone-frame">
         <div className="nav-row">
           <button className="icon-button flat" onClick={() => setFullScreen(null)} title="Back">
             <ArrowLeft size={32} />
           </button>
-          <h1>Custom Foods</h1>
-          <button className="primary-button" onClick={() => setFoodDraft(newFoodDraft())}>
+          <h1>Foods &amp; Meals</h1>
+          <button
+            className="primary-button"
+            onClick={() =>
+              showingMeals
+                ? setMealTemplateDraft({ id: makeId("custom-meal"), name: "", foods: [] })
+                : setFoodDraft(newFoodDraft())
+            }
+          >
             Add
           </button>
         </div>
 
+        <div className="segmented" role="tablist">
+          <button
+            role="tab"
+            aria-selected={!showingMeals}
+            className={showingMeals ? "" : "selected"}
+            onClick={() => setLibraryView("foods")}
+          >
+            Foods
+          </button>
+          <button
+            role="tab"
+            aria-selected={showingMeals}
+            className={showingMeals ? "selected" : ""}
+            onClick={() => setLibraryView("meals")}
+          >
+            Meals
+          </button>
+        </div>
+
+        {showingMeals ? renderMealTemplateList() : renderCustomFoodList()}
+      </main>
+    );
+  }
+
+  function renderMealTemplateList() {
+    if (profile.meals.length === 0) {
+      return (
+        <div className="notice" style={{ flexDirection: "column", alignItems: "flex-start", gap: 12 }}>
+          <p className="muted" style={{ margin: 0 }}>
+            Save a combination you eat often, like a chicken and rice bowl, and add the whole thing
+            to a day in one tap. You can also save a meal straight from your schedule while editing it.
+          </p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="schedule-list">
+        {profile.meals.map((template) => {
+          const totals = sumFoods(template.foods);
+
+          return (
+            <article className="card" key={template.id}>
+              <button
+                className="meal-card-head"
+                style={{ background: "#ffffff", border: 0, textAlign: "left", width: "100%" }}
+                onClick={() => editMealTemplate(template)}
+              >
+                <div className="meal-title">
+                  <Utensils size={24} />
+                  <span className="meal-name">{template.name}</span>
+                </div>
+                <span className="time-pill">{foodCountText(template.foods.length)}</span>
+              </button>
+              <div className="meal-macros">
+                <div className="macro-value">
+                  <MacroBadge kind="cal">
+                    <Flame size={16} />
+                  </MacroBadge>
+                  <strong>{totals.calories}</strong>
+                </div>
+                <div className="macro-value">
+                  <MacroBadge kind="protein">P</MacroBadge>
+                  <strong>{totals.protein}</strong>
+                </div>
+                <div className="macro-value">
+                  <MacroBadge kind="fat">F</MacroBadge>
+                  <strong>{totals.fat}</strong>
+                </div>
+                <div className="macro-value">
+                  <MacroBadge kind="carbs">C</MacroBadge>
+                  <strong>{totals.carbs}</strong>
+                </div>
+              </div>
+              {template.foods.map((food) => (
+                <div className="food-row" key={food.id}>
+                  <span>{food.name}</span>
+                  <small>{food.amount}</small>
+                </div>
+              ))}
+              <button
+                className="ghost-button"
+                style={{ margin: 12, width: "calc(100% - 24px)" }}
+                onClick={() => addMealTemplateToDay(template)}
+              >
+                <Plus size={20} /> Add to {formatShortDate(selectedDate)}
+              </button>
+            </article>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function renderCustomFoodList() {
+    return (
+      <>
         {profile.foods.length === 0 ? (
           <div className="notice" style={{ flexDirection: "column", alignItems: "flex-start", gap: 12 }}>
             <p className="muted" style={{ margin: 0 }}>
@@ -3277,6 +3531,148 @@ export default function DietApp() {
             ))}
           </div>
         )}
+      </>
+    );
+  }
+
+  function renderMealTemplateEditor(draft: CustomMeal) {
+    const totals = sumFoods(draft.foods);
+    const saved = profile.meals.some((entry) => entry.id === draft.id);
+
+    return (
+      <main className="full-screen phone-frame">
+        <div className="nav-row">
+          <button className="icon-button flat" onClick={() => setMealTemplateDraft(null)} title="Back">
+            <ArrowLeft size={32} />
+          </button>
+          <h1>{saved ? "Edit meal" : "New meal"}</h1>
+          <button className="primary-button" onClick={saveMealTemplate}>
+            Save
+          </button>
+        </div>
+
+        <div className="form-stack">
+          <div className="form-row">
+            <label htmlFor="meal-template-name">Name</label>
+            <input
+              id="meal-template-name"
+              className="text-input"
+              placeholder="Chicken and rice bowl"
+              value={draft.name}
+              onChange={(event) => updateMealTemplateDraft({ name: event.target.value })}
+            />
+          </div>
+
+          <h2 className="section-title">Foods</h2>
+          {draft.foods.length === 0 ? (
+            <p className="muted">Add the foods that make up this meal.</p>
+          ) : (
+            <div className="schedule-list">
+              {draft.foods.map((food) => (
+                <article className="card" key={food.id}>
+                  <div className="meal-card-head">
+                    <div className="meal-title">
+                      <span className="meal-name">{food.name}</span>
+                      {food.amount && <small className="muted">{food.amount}</small>}
+                    </div>
+                    <button
+                      className="icon-button flat"
+                      title={`Remove ${food.name}`}
+                      onClick={() =>
+                        updateMealTemplateDraft({
+                          foods: draft.foods.filter((entry) => entry.id !== food.id),
+                        })
+                      }
+                    >
+                      <X size={22} />
+                    </button>
+                  </div>
+                  <div className="meal-macros">
+                    <div className="macro-value">
+                      <MacroBadge kind="cal">
+                        <Flame size={16} />
+                      </MacroBadge>
+                      <strong>{food.calories}</strong>
+                    </div>
+                    <div className="macro-value">
+                      <MacroBadge kind="protein">P</MacroBadge>
+                      <strong>{food.protein}</strong>
+                    </div>
+                    <div className="macro-value">
+                      <MacroBadge kind="fat">F</MacroBadge>
+                      <strong>{food.fat}</strong>
+                    </div>
+                    <div className="macro-value">
+                      <MacroBadge kind="carbs">C</MacroBadge>
+                      <strong>{food.carbs}</strong>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+
+          {draft.foods.length > 0 && (
+            <div className="step-row header-row" style={{ marginTop: 12 }}>
+              <strong>Meal total</strong>
+              <span className="header-row" style={{ gap: 10 }}>
+                <MiniBadge kind="cal">
+                  <Flame size={16} />
+                </MiniBadge>
+                <strong className="mono">{totals.calories}</strong>
+                <MiniBadge kind="protein">P</MiniBadge>
+                <strong className="mono">{totals.protein}</strong>
+                <MiniBadge kind="fat">F</MiniBadge>
+                <strong className="mono">{totals.fat}</strong>
+                <MiniBadge kind="carbs">C</MiniBadge>
+                <strong className="mono">{totals.carbs}</strong>
+              </span>
+            </div>
+          )}
+
+          <h2 className="section-title">Add from your foods</h2>
+          {profile.foods.length === 0 ? (
+            <p className="muted">Save some foods first and they will show up here.</p>
+          ) : (
+            <div className="schedule-list">
+              {profile.foods.map((food) => (
+                <button
+                  className="card"
+                  key={food.id}
+                  style={{ padding: 16, textAlign: "left" }}
+                  onClick={() =>
+                    updateMealTemplateDraft({
+                      foods: [...draft.foods, { ...food, id: makeId("food") }],
+                    })
+                  }
+                >
+                  <div className="split-row" style={{ justifyContent: "space-between" }}>
+                    <strong>{food.name}</strong>
+                    <Plus size={22} />
+                  </div>
+                  <div className="meal-macros" style={{ margin: "14px -16px -16px" }}>
+                    <span>{food.calories} cal</span>
+                    <span>{food.protein} P</span>
+                    <span>{food.fat} F</span>
+                    <span>{food.carbs} C</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {mealTemplateError && <p className="form-error">{mealTemplateError}</p>}
+
+          {saved && (
+            <button
+              className="danger-button"
+              style={{ width: "100%", marginTop: 8 }}
+              onClick={() => deleteMealTemplate(draft.id)}
+            >
+              Delete meal
+            </button>
+          )}
+        </div>
       </main>
     );
   }
@@ -4311,6 +4707,37 @@ export default function DietApp() {
           </button>
         </div>
 
+        {profile.meals.length > 0 && (
+          <>
+            <h2 className="section-title">Your saved meals</h2>
+            <div className="schedule-list">
+              {profile.meals.map((template) => {
+                const totals = sumFoods(template.foods);
+
+                return (
+                  <button
+                    className="card"
+                    key={template.id}
+                    onClick={() => addMealTemplateToDraft(template)}
+                    style={{ padding: 16, textAlign: "left" }}
+                  >
+                    <div className="split-row" style={{ justifyContent: "space-between" }}>
+                      <strong>{template.name}</strong>
+                      <span className="time-pill">{foodCountText(template.foods.length)}</span>
+                    </div>
+                    <div className="meal-macros" style={{ margin: "14px -16px -16px" }}>
+                      <span>{totals.calories} cal</span>
+                      <span>{totals.protein} P</span>
+                      <span>{totals.fat} F</span>
+                      <span>{totals.carbs} C</span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
+
         {profile.foods.length > 0 && (
           <>
             <h2 className="section-title">Your saved foods</h2>
@@ -4518,6 +4945,11 @@ export default function DietApp() {
           <button className="ghost-button" style={{ width: "100%" }} onClick={openFoodPicker}>
             <Plus size={22} /> Add food
           </button>
+          {mealDraft.foods.length > 0 && (
+            <button className="ghost-button" style={{ width: "100%" }} onClick={saveMealDraftAsTemplate}>
+              <Utensils size={22} /> Save as a meal I eat often
+            </button>
+          )}
         </div>
 
         <div className="split-row" style={{ gap: 12, marginTop: 24 }}>

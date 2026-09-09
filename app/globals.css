@@ -993,6 +993,31 @@ button {
   padding: 8px 10px;
 }
 
+.segmented {
+  background: var(--soft);
+  border-radius: 9px;
+  display: grid;
+  gap: 4px;
+  grid-template-columns: 1fr 1fr;
+  margin-bottom: 16px;
+  padding: 4px;
+}
+
+.segmented button {
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted);
+  font-weight: 800;
+  min-height: 40px;
+}
+
+.segmented button.selected {
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
+}
+
 .step-range {
   align-items: center;
   display: flex;
